@@ -5,19 +5,7 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'trainer') {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";  // full Hostinger DB username
-$password = "";           // your Hostinger DB password
-$dbname = "boiyetsdb";         // full Hostinger DB name
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-// Check connection
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
-
+require_once 'includes/db_connection.php';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $member_id = $_POST['member_id'];
     

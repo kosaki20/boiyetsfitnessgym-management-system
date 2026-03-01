@@ -5,19 +5,7 @@ if (!isset($_SESSION['username']) || $_SESSION['role'] != 'client') {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";  // full Hostinger DB username
-$password = "";           // your Hostinger DB password
-$dbname = "boiyetsdb";         // full Hostinger DB name
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-// Check connection
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
-
+require_once 'includes/db_connection.php';
 // Get the logged-in client's user ID from session
 $logged_in_user_id = $_SESSION['user_id'];
 
@@ -36,39 +24,109 @@ function getClientQRCode($conn, $user_id) {
 
 $qrCodeInfo = getClientQRCode($conn, $logged_in_user_id);
 $conn->close();
+
+require_once 'chat_functions.php';
+$unread_count = getUnreadCount($_SESSION['user_id'], $conn);
 ?>
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BOIYETS FITNESS GYM - My QR Code</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    * { font-family: 'Inter', sans-serif; }
-    body { background: linear-gradient(135deg, #111 0%, #0a0a0a 100%); color: #e2e8f0; min-height: 100vh; }
-  </style>
-</head>
-<body class="min-h-screen">
-  <!-- Topbar -->
-  <header class="bg-[#0d0d0d] border-b border-gray-800 px-6 py-4">
-    <div class="flex justify-between items-center">
-      <div class="flex items-center space-x-4">
-        <a href="client_dashboard.php" class="text-yellow-400 hover:text-yellow-300">
-          <i data-lucide="arrow-left" class="w-5 h-5"></i>
-        </a>
-        <h1 class="text-xl font-bold text-yellow-400">BOIYETS FITNESS GYM</h1>
-        <span class="text-gray-400">My QR Code</span>
-      </div>
-      <div class="flex items-center space-x-4">
-        <span class="text-white"><?php echo $_SESSION['username']; ?></span>
-        <img src="https://i.pravatar.cc/40" class="w-10 h-10 rounded-full border border-gray-600" />
-      </div>
-    </div>
-  </header>
+<?php 
+$page_title = 'My QR Code';
+require_once 'includes/client_header.php'; 
+?>
+<div class="flex h-[calc(100vh-64px)]">
+    <!-- Desktop Sidebar -->
+    <aside id="desktopSidebar" class="desktop-sidebar sidebar w-60 bg-[#0d0d0d] p-3 space-y-2 flex flex-col border-r border-gray-800" aria-label="Main navigation">
+        <nav class="space-y-1 flex-1">
+            <a href="client_dashboard.php" class="sidebar-item">
+                <div class="flex items-center">
+                    <i data-lucide="home"></i>
+                    <span class="text-sm font-medium">Dashboard</span>
+                </div>
+                <span class="tooltip">Dashboard</span>
+            </a>
+
+            <!-- Workout Plans Section -->
+            <div>
+                <div id="workoutToggle" class="sidebar-item">
+                    <div class="flex items-center">
+                        <i data-lucide="dumbbell"></i>
+                        <span class="text-sm font-medium">Workout Plans</span>
+                    </div>
+                    <i id="workoutChevron" data-lucide="chevron-right" class="chevron"></i>
+                    <span class="tooltip">Workout Plans</span>
+                </div>
+                <div id="workoutSubmenu" class="submenu space-y-1">
+                    <a href="workoutplansclient.php"><i data-lucide="list"></i> My Workout Plans</a>
+                    <a href="workoutprogress.php"><i data-lucide="activity"></i> Workout Progress</a>
+                </div>
+            </div>
+
+            <!-- Nutrition Plans Section -->
+            <div>
+                <div id="nutritionToggle" class="sidebar-item">
+                    <div class="flex items-center">
+                        <i data-lucide="utensils"></i>
+                        <span class="text-sm font-medium">Nutrition Plans</span>
+                    </div>
+                    <i id="nutritionChevron" data-lucide="chevron-right" class="chevron"></i>
+                    <span class="tooltip">Nutrition Plans</span>
+                </div>
+                <div id="nutritionSubmenu" class="submenu space-y-1">
+                    <a href="nutritionplansclient.php"><i data-lucide="list"></i> My Meal Plans</a>
+                    <a href="nutritiontracking.php"><i data-lucide="chart-bar"></i> Nutrition Tracking</a>
+                </div>
+            </div>
+
+            <!-- Progress Tracking -->
+            <a href="myprogressclient.php" class="sidebar-item">
+                <div class="flex items-center">
+                    <i data-lucide="activity"></i>
+                    <span class="text-sm font-medium">My Progress</span>
+                </div>
+                <span class="tooltip">My Progress</span>
+            </a>
+
+            <!-- Attendance -->
+            <a href="attendanceclient.php" class="sidebar-item active">
+                <div class="flex items-center">
+                    <i data-lucide="calendar"></i>
+                    <span class="text-sm font-medium">Attendance</span>
+                </div>
+                <span class="tooltip">Attendance</span>
+            </a>
+
+            <!-- Membership -->
+            <a href="membershipclient.php" class="sidebar-item">
+                <div class="flex items-center">
+                    <i data-lucide="id-card"></i>
+                    <span class="text-sm font-medium">Membership</span>
+                </div>
+                <span class="tooltip">Membership</span>
+            </a>
+
+            <!-- Feedbacks -->
+            <a href="feedbacksclient.php" class="sidebar-item">
+                <div class="flex items-center">
+                    <i data-lucide="message-square"></i>
+                    <span class="text-sm font-medium">Send Feedback</span>
+                </div>
+                <span class="tooltip">Send Feedback</span>
+            </a>
+
+            <div class="pt-4 border-t border-gray-800 mt-auto">
+                <a href="logout.php" class="sidebar-item">
+                    <div class="flex items-center">
+                        <i data-lucide="log-out"></i>
+                        <span class="text-sm font-medium">Logout</span>
+                    </div>
+                    <span class="tooltip">Logout</span>
+                </a>
+            </div>
+        </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="mainContent" class="main-content flex-1 p-6 overflow-auto">
 
   <main class="max-w-4xl mx-auto p-6">
     <div class="bg-gray-800 rounded-xl p-8 text-center">
@@ -125,13 +183,9 @@ $conn->close();
         </div>
       <?php endif; ?>
     </div>
-  </main>
-
-  <script>
-    lucide.createIcons();
-  </script>
-</body>
-</html>
+    </main>
+</div>
+<?php require_once 'includes/client_footer.php'; ?>
 
 
 

@@ -5,17 +5,14 @@ if (!isset($_SESSION['username']) || $_SESSION['role'] != 'admin') {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
+require_once 'includes/db_connection.php';
 
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-// Check connection
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
+// Include Header and dynamically include Sidebar based on role
+require_once 'includes/admin_header.php';
+if ($_SESSION['role'] === 'admin') {
+    require_once 'includes/admin_sidebar.php';
+} else {
+    require_once 'includes/trainer_sidebar.php';
 }
 
 // Get user data with profile picture
@@ -44,29 +41,38 @@ $notifications = getAdminNotifications($conn);
 $action_message = '';
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     if (isset($_POST['add_product'])) {
-        $name = mysqli_real_escape_string($conn, $_POST['name']);
+        $name = $_POST['name'];
         $price = floatval($_POST['price']);
         $stock_quantity = intval($_POST['stock_quantity']);
         
-        if ($conn->query("INSERT INTO products (name, price, stock_quantity) VALUES ('$name', '$price', '$stock_quantity')")) {
+        $stmt = $conn->prepare("INSERT INTO products (name, price, stock_quantity) VALUES (?, ?, ?)");
+        $stmt->bind_param("sdi", $name, $price, $stock_quantity);
+        
+        if ($stmt->execute()) {
             $action_message = "Product added successfully!";
-            
-            // Create notification for new product
             createNotification($conn, null, 'admin', 'New Product Added', 
                 "Product '$name' has been added to inventory", 'system', 'medium');
         } else {
             $action_message = "Error adding product: " . $conn->error;
         }
+        $stmt->close();
     } elseif (isset($_POST['update_product'])) {
         $id = intval($_POST['product_id']);
-        $name = mysqli_real_escape_string($conn, $_POST['name']);
+        $name = $_POST['name'];
         $price = floatval($_POST['price']);
         $stock_quantity = intval($_POST['stock_quantity']);
         
         // Get old product data for comparison
-        $old_product = $conn->query("SELECT name, stock_quantity FROM products WHERE id=$id")->fetch_assoc();
+        $old_stmt = $conn->prepare("SELECT name, stock_quantity FROM products WHERE id = ?");
+        $old_stmt->bind_param("i", $id);
+        $old_stmt->execute();
+        $old_product = $old_stmt->get_result()->fetch_assoc();
+        $old_stmt->close();
         
-        if ($conn->query("UPDATE products SET name='$name', price='$price', stock_quantity='$stock_quantity' WHERE id=$id")) {
+        $stmt = $conn->prepare("UPDATE products SET name = ?, price = ?, stock_quantity = ? WHERE id = ?");
+        $stmt->bind_param("sdii", $name, $price, $stock_quantity, $id);
+        
+        if ($stmt->execute()) {
             $action_message = "Product updated successfully!";
             
             // Check if stock became low or out of stock after update
@@ -80,29 +86,41 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         } else {
             $action_message = "Error updating product: " . $conn->error;
         }
+        $stmt->close();
     } elseif (isset($_POST['delete_product'])) {
         $id = intval($_POST['product_id']);
-        $product_name = $conn->query("SELECT name FROM products WHERE id=$id")->fetch_assoc()['name'];
         
-        if ($conn->query("DELETE FROM products WHERE id=$id")) {
+        $name_stmt = $conn->prepare("SELECT name FROM products WHERE id = ?");
+        $name_stmt->bind_param("i", $id);
+        $name_stmt->execute();
+        $product_name = $name_stmt->get_result()->fetch_assoc()['name'];
+        $name_stmt->close();
+        
+        $stmt = $conn->prepare("DELETE FROM products WHERE id = ?");
+        $stmt->bind_param("i", $id);
+        
+        if ($stmt->execute()) {
             $action_message = "Product deleted successfully!";
-            
-            // Create notification for deleted product
             createNotification($conn, null, 'admin', 'Product Deleted', 
                 "Product '$product_name' has been removed from inventory", 'system', 'medium');
         } else {
             $action_message = "Error deleting product: " . $conn->error;
         }
+        $stmt->close();
     } elseif (isset($_POST['sell_product'])) {
         $product_id = intval($_POST['product_id']);
         $quantity = intval($_POST['quantity']);
-        $payment_method = mysqli_real_escape_string($conn, $_POST['payment_method']);
+        $payment_method = $_POST['payment_method'];
         $member_id = !empty($_POST['member_id']) ? intval($_POST['member_id']) : NULL;
         
         // Get product details
-        $product_query = $conn->query("SELECT * FROM products WHERE id = $product_id");
-        if ($product_query->num_rows > 0) {
-            $product = $product_query->fetch_assoc();
+        $stmt = $conn->prepare("SELECT * FROM products WHERE id = ?");
+        $stmt->bind_param("i", $product_id);
+        $stmt->execute();
+        $product_result = $stmt->get_result();
+        
+        if ($product_result->num_rows > 0) {
+            $product = $product_result->fetch_assoc();
             
             // Check if enough stock is available
             if ($product['stock_quantity'] >= $quantity) {
@@ -114,7 +132,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 try {
                     // Update product stock
                     $new_stock = $product['stock_quantity'] - $quantity;
-                    $conn->query("UPDATE products SET stock_quantity = $new_stock WHERE id = $product_id");
+                    $update_stmt = $conn->prepare("UPDATE products SET stock_quantity = ? WHERE id = ?");
+                    $update_stmt->bind_param("ii", $new_stock, $product_id);
+                    $update_stmt->execute();
+                    $update_stmt->close();
                     
                     // Create sale record
                     $items = json_encode([[
@@ -125,8 +146,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     ]]);
                     
                     $sold_by = $_SESSION['user_id'];
-                    $conn->query("INSERT INTO sales (items, total_amount, payment_method, member_id, sold_by) 
-                                 VALUES ('$items', $total_amount, '$payment_method', $member_id, $sold_by)");
+                    $sale_stmt = $conn->prepare("INSERT INTO sales (items, total_amount, payment_method, member_id, sold_by) VALUES (?, ?, ?, ?, ?)");
+                    $sale_stmt->bind_param("sdiii", $items, $total_amount, $payment_method, $member_id, $sold_by);
+                    $sale_stmt->execute();
+                    $sale_id = $conn->insert_id;
+                    $sale_stmt->close();
                     
                     // Create revenue entry
                     $description = "Sale of $quantity x {$product['name']}";
@@ -137,23 +161,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                                   reference_type, reference_id, reference_name, revenue_date, recorded_by) 
                                   VALUES (1, ?, ?, ?, ?, ?, ?, CURDATE(), ?)";
                     
-                    $stmt = $conn->prepare($revenue_sql);
-                    $stmt->bind_param("dsssisi", $total_amount, $description, $payment_method, 
+                    $rev_stmt = $conn->prepare($revenue_sql);
+                    $rev_stmt->bind_param("dsssisi", $total_amount, $description, $payment_method, 
                                     $reference_type, $member_id, $reference_name, $_SESSION['user_id']);
-                    $stmt->execute();
-                    
-                    // Get the revenue entry ID for linking
+                    $rev_stmt->execute();
                     $revenue_entry_id = $conn->insert_id;
+                    $rev_stmt->close();
                     
                     // Update sale with revenue entry reference
-                    $sale_id = $conn->insert_id;
-                    $conn->query("UPDATE sales SET revenue_entry_id = $revenue_entry_id WHERE id = $sale_id");
+                    $link_stmt = $conn->prepare("UPDATE sales SET revenue_entry_id = ? WHERE id = ?");
+                    $link_stmt->bind_param("ii", $revenue_entry_id, $sale_id);
+                    $link_stmt->execute();
+                    $link_stmt->close();
                     
                     $conn->commit();
                     
                     $action_message = "Product sold successfully! ₱" . number_format($total_amount, 2) . " revenue recorded.";
-                    
-                    // Create notification
                     createNotification($conn, null, 'admin', 'Product Sold', 
                         "Sold $quantity x {$product['name']} for ₱" . number_format($total_amount, 2), 'system', 'medium');
                     
@@ -167,32 +190,53 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         } else {
             $action_message = "Product not found!";
         }
+        $stmt->close();
     }
 }
 
 // Fetch all products
-$products_result = $conn->query("SELECT * FROM products ORDER BY created_at DESC");
-$low_stock_products = $conn->query("SELECT * FROM products WHERE stock_quantity < 10 ORDER BY stock_quantity ASC");
+$products_stmt = $conn->prepare("SELECT * FROM products ORDER BY created_at DESC");
+$products_stmt->execute();
+$products_result = $products_stmt->get_result();
+
+$low_stock_stmt = $conn->prepare("SELECT * FROM products WHERE stock_quantity < 10 ORDER BY stock_quantity ASC");
+$low_stock_stmt->execute();
+$low_stock_products = $low_stock_stmt->get_result();
 
 // Fetch active members for dropdown
-$members_result = $conn->query("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name");
+$members_stmt = $conn->prepare("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name");
+$members_stmt->execute();
+$members_result = $members_stmt->get_result();
 
 // Calculate statistics
 $total_products = $products_result->num_rows;
-$total_value_result = $conn->query("SELECT SUM(price * stock_quantity) as total_value FROM products");
-$total_value = $total_value_result->fetch_assoc()['total_value'] ?? 0;
-$out_of_stock_count = $conn->query("SELECT COUNT(*) as count FROM products WHERE stock_quantity = 0")->fetch_assoc()['count'];
-$low_stock_count = $conn->query("SELECT COUNT(*) as count FROM products WHERE stock_quantity < 10 AND stock_quantity > 0")->fetch_assoc()['count'];
+
+$total_value_stmt = $conn->prepare("SELECT SUM(price * stock_quantity) as total_value FROM products");
+$total_value_stmt->execute();
+$total_value = $total_value_stmt->get_result()->fetch_assoc()['total_value'] ?? 0;
+$total_value_stmt->close();
+
+$out_stmt = $conn->prepare("SELECT COUNT(*) as count FROM products WHERE stock_quantity = 0");
+$out_stmt->execute();
+$out_of_stock_count = $out_stmt->get_result()->fetch_assoc()['count'];
+$out_stmt->close();
+
+$low_stmt = $conn->prepare("SELECT COUNT(*) as count FROM products WHERE stock_quantity < 10 AND stock_quantity > 0");
+$low_stmt->execute();
+$low_stock_count = $low_stmt->get_result()->fetch_assoc()['count'];
+$low_stmt->close();
 
 // Calculate today's sales
-$today_sales_result = $conn->query("
+$today_stmt = $conn->prepare("
     SELECT COALESCE(SUM(total_amount), 0) as today_sales 
     FROM sales 
     WHERE DATE(sold_at) = CURDATE()
 ");
-$today_sales = $today_sales_result->fetch_assoc()['today_sales'];
+$today_stmt->execute();
+$today_sales = $today_stmt->get_result()->fetch_assoc()['today_sales'];
+$today_stmt->close();
 
-// Check for low stock notifications that need to be created
+// Check for low stock notifications
 checkLowStockNotifications($conn);
 
 $conn->close();
@@ -207,39 +251,50 @@ function checkLowStockNotifications($conn) {
     
     while ($item = $low_stock_items->fetch_assoc()) {
         // Check if notification already exists for this item
-        $existing_notif = $conn->query("
-            SELECT id FROM notifications 
-            WHERE title LIKE '%Low Stock%' 
-            AND message LIKE '%{$item['name']}%' 
-            AND read_status = 0
-            AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
-        ");
+        $check_sql = "SELECT id FROM notifications 
+                    WHERE title LIKE '%Low Stock%' 
+                    AND message LIKE ? 
+                    AND read_status = 0
+                    AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)";
+        $check_stmt = $conn->prepare($check_sql);
+        $message_pattern = "%" . $item['name'] . "%";
+        $check_stmt->bind_param("s", $message_pattern);
+        $check_stmt->execute();
+        $existing_notif = $check_stmt->get_result();
         
         if ($existing_notif->num_rows == 0) {
             createNotification($conn, null, 'admin', 'Low Stock Alert', 
                 "Product '{$item['name']}' is running low (only {$item['stock_quantity']} left)", 'system', 'medium');
         }
+        $check_stmt->close();
     }
     
     // Check for out of stock items
-    $out_of_stock_items = $conn->query("
-        SELECT name FROM products WHERE stock_quantity = 0
-    ");
+    $out_of_stock_items = $conn->query("SELECT name FROM products WHERE stock_quantity = 0");
     
     while ($item = $out_of_stock_items->fetch_assoc()) {
-        $existing_notif = $conn->query("
-            SELECT id FROM notifications 
-            WHERE title LIKE '%Out of Stock%' 
-            AND message LIKE '%{$item['name']}%' 
-            AND read_status = 0
-            AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)
-        ");
+        $check_sql = "SELECT id FROM notifications 
+                    WHERE title LIKE '%Out of Stock%' 
+                    AND message LIKE ? 
+                    AND read_status = 0
+                    AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)";
+        $check_stmt = $conn->prepare($check_sql);
+        $message_pattern = "%" . $item['name'] . "%";
+        $check_stmt->bind_param("s", $message_pattern);
+        $check_stmt->execute();
+        $existing_notif = $check_stmt->get_result();
         
         if ($existing_notif->num_rows == 0) {
             createNotification($conn, null, 'admin', 'Product Out of Stock', 
                 "Product '{$item['name']}' is out of stock", 'system', 'high');
         }
+        $check_stmt->close();
     }
+    // This variable was not defined, assuming it was meant to be $out_of_stock_items
+    // If $out_of_stock_items was a mysqli_result object, it doesn't have a close() method.
+    // If it was a statement, it should be $out_of_stock_items->close();
+    // For now, commenting it out to avoid error, as $out_of_stock_items is a result set.
+    // $out_of_stock_items_stmt->close(); 
 }
 ?>
 
@@ -252,145 +307,7 @@ function checkLowStockNotifications($conn) {
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    * {
-      font-family: 'Inter', sans-serif;
-    }
-    
-    body {
-      background: linear-gradient(135deg, #111 0%, #0a0a0a 100%);
-      color: #e2e8f0;
-    }
-    
-    .sidebar { 
-      flex-shrink: 0; 
-      transition: all 0.3s ease;
-      overflow-y: auto;
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
-    .sidebar::-webkit-scrollbar {
-      display: none;
-    }
-    
-    .tooltip {
-      position: absolute;
-      left: 100%;
-      top: 50%;
-      transform: translateY(-50%) translateX(-10px);
-      margin-left: 6px;
-      background: rgba(0,0,0,0.9);
-      color: #fff;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      white-space: nowrap;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease, transform 0.2s ease;
-      z-index: 50;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    
-    .sidebar-collapsed .sidebar-item .text-sm { 
-      display: none; 
-    }
-    
-    .sidebar-collapsed .sidebar-item { 
-      justify-content: center; 
-      padding: 0.6rem;
-    }
-    
-    .sidebar-collapsed .sidebar-item i { 
-      margin: 0; 
-    }
-    
-    .sidebar-collapsed .sidebar-item:hover .tooltip { 
-      opacity: 1; 
-      transform: translateY(-50%) translateX(0); 
-    }
-
-    .sidebar-item {
-      position: relative;
-      display: flex;
-      align-items: center;
-      color: #9ca3af;
-      padding: 0.6rem 0.8rem;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      margin-bottom: 0.25rem;
-    }
-    
-    .sidebar-item.active {
-      color: #fbbf24;
-      background: rgba(251, 191, 36, 0.12);
-    }
-    
-    .sidebar-item.active::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 20%;
-      height: 60%;
-      width: 3px;
-      background: #fbbf24;
-      border-radius: 4px;
-    }
-    
-    .sidebar-item:hover { 
-      background: rgba(255,255,255,0.05); 
-      color: #fbbf24; 
-    }
-    
-    .sidebar-item i { 
-      width: 18px; 
-      height: 18px; 
-      stroke-width: 1.75; 
-      flex-shrink: 0; 
-      margin-right: 0.75rem; 
-    }
-
-    .card {
-      background: rgba(26, 26, 26, 0.7);
-      border-radius: 12px;
-      padding: 1rem;
-      backdrop-filter: blur(10px);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      transition: all 0.2s ease;
-    }
-    
-    .card:hover {
-      box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
-      transform: translateY(-2px);
-    }
-    
-    .card-title {
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: #fbbf24;
-      margin-bottom: 0.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    
-    .card-value {
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #f8fafc;
-    }
-    
-    .topbar {
-      background: rgba(13, 13, 13, 0.95);
-      backdrop-filter: blur(10px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      position: relative;
-      z-index: 100;
-    }
-    
+    /* Custom styles for products page */
     .table-container {
       background: rgba(26, 26, 26, 0.7);
       border-radius: 12px;
@@ -595,124 +512,14 @@ function checkLowStockNotifications($conn) {
       color: #10b981;
     }
 
-    /* Dropdown Styles */
-    .dropdown-container {
-      position: relative;
+    /* Main content adjustment */
+    main {
+      margin-left: 240px; /* Match sidebar width */
+      transition: margin-left 0.3s ease;
     }
     
-    .dropdown {
-      position: absolute;
-      right: 0;
-      top: 100%;
-      margin-top: 0.5rem;
-      background: #1a1a1a;
-      border: 1px solid #374151;
-      border-radius: 8px;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
-      z-index: 1000;
-      min-width: 200px;
-      backdrop-filter: blur(10px);
-    }
-    
-    .notification-dropdown {
-      width: 380px;
-      max-width: 90vw;
-    }
-    
-    .user-dropdown {
-      width: 240px;
-    }
-    
-    .notification-item {
-      padding: 0.75rem 1rem;
-      border-bottom: 1px solid #374151;
-      cursor: pointer;
-      transition: background-color 0.2s ease;
-    }
-    
-    .notification-item:hover {
-      background: rgba(255, 255, 255, 0.05);
-    }
-    
-    .notification-item:last-child {
-      border-bottom: none;
-    }
-    
-    .line-clamp-2 {
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-
-    /* Toast notification */
-    .toast {
-      position: fixed;
-      top: 20px;
-      right: 20px;
-      padding: 1rem 1.5rem;
-      border-radius: 8px;
-      color: white;
-      z-index: 1000;
-      max-width: 400px;
-      box-shadow: 0 10px 15px rgba(0, 0, 0, 0.3);
-      transform: translateX(400px);
-      transition: transform 0.3s ease;
-    }
-    
-    .toast.show {
-      transform: translateX(0);
-    }
-    
-    .toast.success {
-      background: #10b981;
-    }
-    
-    .toast.error {
-      background: #ef4444;
-    }
-    
-    .toast.warning {
-      background: #f59e0b;
-    }
-    
-    .toast.info {
-      background: #3b82f6;
-    }
-
-    /* Mobile optimizations */
-    @media (max-width: 768px) {
-      .sidebar {
-        position: fixed;
-        height: 100vh;
-        z-index: 1000;
-        transform: translateX(-100%);
-        transition: transform 0.3s ease;
-      }
-      
-      .sidebar.mobile-open {
-        transform: translateX(0);
-      }
-      
-      .sidebar-collapsed {
-        transform: translateX(-100%);
-      }
-      
-      .sidebar-item:hover .tooltip {
-        display: none !important;
-      }
-      
-      .stats-grid {
-        grid-template-columns: repeat(2, 1fr);
-      }
-      
-      .dropdown {
-        position: fixed;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 90vw;
-        max-width: 400px;
-      }
+    .sidebar-collapsed + main {
+      margin-left: 64px; /* Match collapsed sidebar width */
     }
   </style>
 </head>
@@ -721,234 +528,16 @@ function checkLowStockNotifications($conn) {
   <!-- Toast Notification Container -->
   <div id="toastContainer"></div>
 
-  <!-- Topbar -->
-  <header class="topbar flex items-center justify-between px-4 py-3 shadow">
-    <div class="flex items-center space-x-3">
-      <button id="toggleSidebar" class="text-gray-300 hover:text-yellow-400 transition-colors p-1 rounded-lg hover:bg-white/5">
-        <i data-lucide="menu" class="w-5 h-5"></i>
-      </button>
-      <h1 class="text-lg font-bold text-yellow-400">BOIYETS FITNESS GYM</h1>
-    </div>
-    <div class="flex items-center space-x-3">
-      <!-- Chat Button -->
-      <a href="chat.php" class="text-gray-300 hover:text-blue-400 transition-colors p-2 rounded-lg hover:bg-white/5 relative">
-        <i data-lucide="message-circle"></i>
-        <?php if ($unread_count > 0): ?>
-          <span class="absolute -top-1 -right-1 bg-red-500 text-xs rounded-full h-5 w-5 flex items-center justify-center" id="chatBadge">
-            <?php echo $unread_count; ?>
-          </span>
-        <?php endif; ?>
-      </a>
-
-      <!-- Notification Bell -->
-      <div class="dropdown-container">
-        <button id="notificationBell" class="text-gray-300 hover:text-yellow-400 transition-colors p-2 rounded-lg hover:bg-white/5 relative">
-          <i data-lucide="bell" class="w-5 h-5"></i>
-          <span class="absolute -top-1 -right-1 bg-red-500 text-xs rounded-full h-5 w-5 flex items-center justify-center <?php echo $notification_count > 0 ? '' : 'hidden'; ?>" id="notificationBadge">
-            <?php echo $notification_count > 99 ? '99+' : $notification_count; ?>
-          </span>
-        </button>
-        
-        <!-- Notification Dropdown -->
-        <div id="notificationDropdown" class="dropdown notification-dropdown hidden">
-          <div class="p-4 border-b border-gray-700">
-            <div class="flex justify-between items-center">
-              <h3 class="text-yellow-400 font-semibold">Notifications</h3>
-              <?php if ($notification_count > 0): ?>
-                <button id="markAllRead" class="text-xs text-gray-400 hover:text-yellow-400">Mark all read</button>
-              <?php endif; ?>
-            </div>
-          </div>
-          <div class="max-h-96 overflow-y-auto">
-            <div id="notificationList" class="p-2">
-              <?php if (empty($notifications)): ?>
-                <div class="text-center py-8 text-gray-500">
-                  <i data-lucide="bell-off" class="w-12 h-12 mx-auto mb-3 opacity-50"></i>
-                  <p>No notifications</p>
-                  <p class="text-sm mt-1">You're all caught up!</p>
-                </div>
-              <?php else: ?>
-                <?php foreach ($notifications as $notification): ?>
-                  <div class="notification-item" data-notification-id="<?php echo $notification['id']; ?>">
-                    <div class="flex items-start gap-3">
-                      <div class="flex-shrink-0 mt-1">
-                        <?php
-                        $icon = 'bell';
-                        $color = 'gray-400';
-                        switch($notification['type']) {
-                          case 'announcement': $icon = 'megaphone'; $color = 'yellow-400'; break;
-                          case 'membership': $icon = 'id-card'; $color = 'blue-400'; break;
-                          case 'message': $icon = 'message-circle'; $color = 'green-400'; break;
-                          case 'system': $icon = 'settings'; $color = 'purple-400'; break;
-                          case 'reminder': $icon = 'clock'; $color = 'orange-400'; break;
-                        }
-                        ?>
-                        <i data-lucide="<?php echo $icon; ?>" class="w-4 h-4 text-<?php echo $color; ?>"></i>
-                      </div>
-                      <div class="flex-1 min-w-0">
-                        <div class="flex justify-between items-start mb-1">
-                          <p class="text-white font-medium text-sm"><?php echo htmlspecialchars($notification['title']); ?></p>
-                          <span class="text-xs text-gray-400 whitespace-nowrap ml-2">
-                            <?php
-                            $time = strtotime($notification['created_at']);
-                            $now = time();
-                            $diff = $now - $time;
-                            
-                            if ($diff < 60) {
-                              echo 'Just now';
-                            } elseif ($diff < 3600) {
-                              echo floor($diff / 60) . 'm ago';
-                            } elseif ($diff < 86400) {
-                              echo floor($diff / 3600) . 'h ago';
-                            } elseif ($diff < 604800) {
-                              echo floor($diff / 86400) . 'd ago';
-                            } else {
-                              echo date('M j, Y', $time);
-                            }
-                            ?>
-                          </span>
-                        </div>
-                        <p class="text-gray-400 text-xs line-clamp-2"><?php echo htmlspecialchars($notification['message']); ?></p>
-                        <?php if ($notification['priority'] === 'high'): ?>
-                          <span class="inline-block mt-1 px-2 py-1 bg-red-500/20 text-red-400 text-xs rounded-full">
-                            Important
-                          </span>
-                        <?php endif; ?>
-                      </div>
-                    </div>
-                  </div>
-                <?php endforeach; ?>
-              <?php endif; ?>
-            </div>
-          </div>
-          <div class="p-3 border-t border-gray-700 text-center">
-            <a href="notifications.php" class="text-yellow-400 text-sm hover:text-yellow-300">View All Notifications</a>
-          </div>
-        </div>
-      </div>
-
-      <div class="h-8 w-px bg-gray-700 mx-1"></div>
-      
-      <!-- User Profile Dropdown -->
-      <div class="dropdown-container">
-        <button id="userMenuButton" class="flex items-center space-x-2 text-gray-300 hover:text-yellow-400 transition-colors p-2 rounded-lg hover:bg-white/5">
-          <img src="<?php echo htmlspecialchars($_SESSION['profile_picture'] ?? $user['profile_picture'] ?? 'https://i.pravatar.cc/40'); ?>" class="w-8 h-8 rounded-full border border-gray-600" id="userAvatar" />
-          <span class="text-sm font-medium hidden md:inline" id="userName">
-            <?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['username']); ?>
-          </span>
-          <i data-lucide="chevron-down" class="w-4 h-4"></i>
-        </button>
-        
-        <!-- User Dropdown Menu -->
-        <div id="userDropdown" class="dropdown user-dropdown hidden">
-          <div class="p-4 border-b border-gray-700">
-            <p class="text-white font-semibold text-sm"><?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['username']); ?></p>
-            <p class="text-gray-400 text-xs capitalize"><?php echo $_SESSION['role']; ?></p>
-          </div>
-          <div class="p-2">
-            <a href="profile.php" class="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:text-yellow-400 hover:bg-white/5 rounded-lg transition-colors">
-              <i data-lucide="user" class="w-4 h-4"></i>
-              My Profile
-            </a>
-            <a href="edit_profile.php" class="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:text-yellow-400 hover:bg-white/5 rounded-lg transition-colors">
-              <i data-lucide="edit-2" class="w-4 h-4"></i>
-              Edit Profile
-            </a>
-            <a href="settings.php" class="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:text-yellow-400 hover:bg-white/5 rounded-lg transition-colors">
-              <i data-lucide="settings" class="w-4 h-4"></i>
-              Settings
-            </a>
-            <div class="border-t border-gray-700 my-1"></div>
-            <a href="logout.php" class="flex items-center gap-2 px=3 py=2 text-sm text-red-400 hover:text-red-300 hover:bg-red-400/10 rounded-lg transition-colors">
-              <i data-lucide="log-out" class="w-4 h-4"></i>
-              Logout
-            </a>
-          </div>
-        </div>
-      </div>
-    </div>
-  </header>
+<?php
+require_once 'includes/admin_header.php';
+if ($_SESSION['role'] === 'admin') {
+    require_once 'includes/admin_sidebar.php';
+} else {
+    require_once 'includes/trainer_sidebar.php';
+}
+?>
 
   <div class="flex">
-    <!-- Sidebar -->
-    <aside id="sidebar" class="sidebar w-60 bg-[#0d0d0d] h-screen p-3 space-y-2 flex flex-col overflow-y-auto border-r border-gray-800">
-      <nav class="space-y-1 flex-1">
-        <a href="admin_dashboard.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="home"></i>
-            <span class="text-sm font-medium">Dashboard</span>
-          </div>
-          <span class="tooltip">Dashboard</span>
-        </a>
-
-        <a href="view_users.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="users"></i>
-            <span class="text-sm font-medium">View All Users</span>
-          </div>
-          <span class="tooltip">View All Users</span>
-        </a>
-
-        <a href="revenue.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="dollar-sign"></i>
-            <span class="text-sm font-medium">Revenue Tracking</span>
-          </div>
-          <span class="tooltip">Revenue Tracking</span>
-        </a>
-
-        <a href="products.php" class="sidebar-item active">
-          <div class="flex items-center">
-            <i data-lucide="package"></i>
-            <span class="text-sm font-medium">Products & Inventory</span>
-          </div>
-          <span class="tooltip">Products & Inventory</span>
-        </a>
-
-        <a href="adminannouncement.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="megaphone"></i>
-            <span class="text-sm font-medium">Announcements</span>
-          </div>
-          <span class="tooltip">Announcements</span>
-        </a>
-<a href="equipment_monitoring.php" class="sidebar-item">
-  <div class="flex items-center">
-    <i data-lucide="wrench"></i>
-    <span class="text-sm font-medium">Equipment Monitoring</span>
-  </div>
-  <span class="tooltip">Equipment Monitoring</span>
-</a>
-
-
-
-<a href="maintenance_report.php" class="sidebar-item">
-  <div class="flex items-center">
-    <i data-lucide="alert-triangle"></i>
-    <span class="text-sm font-medium">Maintenance Report</span>
-  </div>
-  <span class="tooltip">Maintenance Report</span>
-</a>
-        <a href="feedbacksadmin.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="message-square"></i>
-            <span class="text-sm font-medium">Feedback & Reports</span>
-          </div>
-          <span class="tooltip">Feedback & Reports</span>
-        </a>
-
-        <div class="pt-4 border-t border-gray-800 mt-auto">
-          <a href="logout.php" class="sidebar-item">
-            <div class="flex items-center">
-              <i data-lucide="log-out"></i>
-              <span class="text-sm font-medium">Logout</span>
-            </div>
-            <span class="tooltip">Logout</span>
-          </a>
-        </div>
-      </nav>
-    </aside>
-
     <!-- Main Content -->
     <main class="flex-1 p-4 space-y-4 overflow-auto">
       <div class="flex justify-between items-center mb-6">

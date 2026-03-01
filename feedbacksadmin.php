@@ -1,36 +1,21 @@
 <?php
 // Enable error reporting for debugging
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
 session_start();
 if (!isset($_SESSION['user_id']) || ($_SESSION['role'] != 'admin' && $_SESSION['role'] != 'trainer')) {
     header("Location: index.php");
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
+require_once 'includes/db_connection.php';
+require_once 'chat_functions.php';
 
 // Generate CSRF token
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
-// Include chat functions if the file exists
-$unread_count = 0;
-if (file_exists('chat_functions.php')) {
-    require_once 'chat_functions.php';
-    $unread_count = getUnreadCount($_SESSION['user_id'], $conn);
-}
+// Include chat functions
+$unread_count = getUnreadCount($_SESSION['user_id'], $conn);
 
 // Handle feedback status updates
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['update_feedback_status'])) {
@@ -203,15 +188,18 @@ $feedback_sql = "SELECT f.*, u.full_name, u.username, u.role as user_role
 $feedback_stmt = $conn->prepare($feedback_sql);
 if ($feedback_stmt && !empty($feedback_params)) {
     $feedback_stmt->bind_param($feedback_types, ...$feedback_params);
-    $feedback_stmt->execute();
-    $feedback_result = $feedback_stmt->get_result();
-} else {
-    $feedback_result = $conn->query($feedback_sql);
 }
+$feedback_stmt->execute();
+$feedback_result = $feedback_stmt->get_result();
 
 // Get equipment and facilities for linking
-$equipment_result = $conn->query("SELECT id, name, category, location FROM equipment ORDER BY name");
-$facilities_result = $conn->query("SELECT id, name FROM facilities ORDER BY name");
+$equip_stmt = $conn->prepare("SELECT id, name, category, location FROM equipment ORDER BY name");
+$equip_stmt->execute();
+$equipment_result = $equip_stmt->get_result();
+
+$fac_stmt = $conn->prepare("SELECT id, name FROM facilities ORDER BY name");
+$fac_stmt->execute();
+$facilities_result = $fac_stmt->get_result();
 
 // Get feedback statistics
 $stats_sql = "SELECT 
@@ -221,615 +209,24 @@ $stats_sql = "SELECT
                 SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as resolved,
                 SUM(CASE WHEN urgent = 1 THEN 1 ELSE 0 END) as urgent
               FROM feedback";
-$stats_result = $conn->query($stats_sql);
-$stats = $stats_result->fetch_assoc();
+$stats_stmt = $conn->prepare($stats_sql);
+$stats_stmt->execute();
+$stats = $stats_stmt->get_result()->fetch_assoc();
 
 $username = $_SESSION['username'] ?? 'User';
 $role = $_SESSION['role'] ?? 'trainer';
 ?>
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BOIYETS FITNESS GYM - Feedback Management</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-    * {
-      font-family: 'Inter', sans-serif;
-    }
-
-    body {
-      background: linear-gradient(135deg, #111 0%, #0a0a0a 100%);
-      color: #e2e8f0;
-      margin: 0;
-      padding: 0;
-    }
-
-    .sidebar { 
-      flex-shrink: 0; 
-      transition: all 0.3s ease;
-      overflow-y: auto;
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-      position: fixed;
-      height: 100vh;
-    }
-    .sidebar::-webkit-scrollbar {
-      display: none;
-    }
-
-    .tooltip {
-      position: absolute;
-      left: 100%;
-      top: 50%;
-      transform: translateY(-50%) translateX(-10px);
-      margin-left: 6px;
-      background: rgba(0,0,0,0.9);
-      color: #fff;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      white-space: nowrap;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease, transform 0.2s ease;
-      z-index: 50;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-
-    .sidebar-collapsed .sidebar-item .text-sm { 
-      display: none; 
-    }
-
-    .sidebar-collapsed .sidebar-item { 
-      justify-content: center; 
-      padding: 0.6rem;
-    }
-
-    .sidebar-collapsed .sidebar-item i { 
-      margin: 0; 
-    }
-
-    .sidebar-collapsed .sidebar-item:hover .tooltip { 
-      opacity: 1; 
-      transform: translateY(-50%) translateX(0); 
-    }
-
-    .sidebar-item {
-      position: relative;
-      display: flex;
-      align-items: center;
-      color: #9ca3af;
-      padding: 0.6rem 0.8rem;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      margin-bottom: 0.25rem;
-      text-decoration: none;
-    }
-
-    .sidebar-item.active {
-      color: #fbbf24;
-      background: rgba(251, 191, 36, 0.12);
-    }
-
-    .sidebar-item.active::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 20%;
-      height: 60%;
-      width: 3px;
-      background: #fbbf24;
-      border-radius: 4px;
-    }
-
-    .sidebar-item:hover { 
-      background: rgba(255,255,255,0.05); 
-      color: #fbbf24; 
-    }
-
-    .sidebar-item i { 
-      width: 18px; 
-      height: 18px; 
-      stroke-width: 1.75; 
-      flex-shrink: 0; 
-      margin-right: 0.75rem; 
-    }
-
-    .card {
-      background: rgba(26, 26, 26, 0.7);
-      border-radius: 12px;
-      padding: 1rem;
-      backdrop-filter: blur(10px);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      transition: all 0.2s ease;
-    }
-
-    .card:hover {
-      box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
-      transform: translateY(-2px);
-    }
-
-    .card-title {
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: #fbbf24;
-      margin-bottom: 0.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .card-value {
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #f8fafc;
-    }
-
-    .topbar {
-      background: rgba(13, 13, 13, 0.95);
-      backdrop-filter: blur(10px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      position: sticky;
-      top: 0;
-      z-index: 100;
-    }
-
-    .button-sm { 
-      padding: 0.5rem 0.75rem; 
-      font-size: 0.8rem; 
-      border-radius: 8px;
-      font-weight: 500;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      transition: all 0.2s ease;
-      border: none;
-      cursor: pointer;
-      text-decoration: none;
-    }
-
-    .button-sm:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-    }
-
-    .btn-primary {
-      background: rgba(251, 191, 36, 0.2);
-      color: #fbbf24;
-      border: 1px solid rgba(251, 191, 36, 0.3);
-    }
-
-    .btn-primary:hover {
-      background: rgba(251, 191, 36, 0.3);
-    }
-
-    .btn-active {
-      background: #fbbf24;
-      color: white;
-      border: 1px solid #fbbf24;
-    }
-
-    .btn-outline {
-      background: transparent;
-      border: 1px solid #fbbf24;
-      color: #fbbf24;
-    }
-
-    .btn-outline:hover {
-      background: #fbbf24;
-      color: white;
-    }
-
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-      gap: 0.75rem;
-    }
-
-    .stat-card {
-      background: rgba(251, 191, 36, 0.1);
-      border-left: 4px solid #fbbf24;
-    }
-
-    .expense-card {
-      background: rgba(239, 68, 68, 0.1);
-      border-left: 4px solid #ef4444;
-    }
-
-    .profit-card {
-      background: rgba(34, 197, 94, 0.1);
-      border-left: 4px solid #22c55e;
-    }
-
-    .membership-card {
-      background: rgba(59, 130, 246, 0.1);
-      border-left: 4px solid #3b82f6;
-    }
-
-    .empty-state {
-      text-align: center;
-      padding: 3rem 1rem;
-      color: #6b7280;
-    }
-
-    .empty-state i {
-      margin-bottom: 1rem;
-      opacity: 0.5;
-    }
-
-    .badge {
-      padding: 0.25rem 0.5rem;
-      border-radius: 6px;
-      font-size: 0.75rem;
-      font-weight: 500;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-    }
-
-    .badge-good {
-      background: rgba(34, 197, 94, 0.2);
-      color: #22c55e;
-      border: 1px solid rgba(34, 197, 94, 0.3);
-    }
-
-    .badge-needs-maintenance {
-      background: rgba(245, 158, 11, 0.2);
-      color: #f59e0b;
-      border: 1px solid rgba(245, 158, 11, 0.3);
-    }
-
-    .badge-under-repair {
-      background: rgba(59, 130, 246, 0.2);
-      color: #3b82f6;
-      border: 1px solid rgba(59, 130, 246, 0.3);
-    }
-
-    .badge-broken {
-      background: rgba(239, 68, 68, 0.2);
-      color: #ef4444;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-    }
-
-    .badge-closed {
-      background: rgba(107, 114, 128, 0.2);
-      color: #6b7280;
-      border: 1px solid rgba(107, 114, 128, 0.3);
-    }
-
-    .badge-pending {
-      background: rgba(245, 158, 11, 0.2);
-      color: #f59e0b;
-      border: 1px solid rgba(245, 158, 11, 0.3);
-    }
-    
-    .badge-reviewed {
-      background: rgba(59, 130, 246, 0.2);
-      color: #3b82f6;
-      border: 1px solid rgba(59, 130, 246, 0.3);
-    }
-    
-    .badge-resolved {
-      background: rgba(34, 197, 94, 0.2);
-      color: #22c55e;
-      border: 1px solid rgba(34, 197, 94, 0.3);
-    }
-
-    .badge-outline {
-      background: transparent;
-      border: 1px solid #fbbf24;
-      color: #fbbf24;
-    }
-
-    /* Modal styles */
-    .modal {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.8);
-      z-index: 1000;
-      backdrop-filter: blur(5px);
-    }
-
-    .modal-content {
-      background: #1a1a1a;
-      margin: 2rem auto;
-      padding: 2rem;
-      border-radius: 12px;
-      max-width: 500px;
-      width: 90%;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      max-height: 90vh;
-      overflow-y: auto;
-      position: relative;
-    }
-
-    .form-input {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 8px;
-      padding: 0.75rem;
-      color: white;
-      width: 100%;
-      transition: all 0.2s ease;
-      box-sizing: border-box;
-    }
-
-    .form-input:focus {
-      outline: none;
-      border-color: #fbbf24;
-      box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
-    }
-
-    .form-label {
-      display: block;
-      font-size: 0.875rem;
-      font-weight: 500;
-      color: #9ca3af;
-      margin-bottom: 0.5rem;
-    }
-
-    /* Table styles */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-
-    th, td {
-      padding: 0.75rem 1rem;
-      text-align: left;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    th {
-      background: rgba(255, 255, 255, 0.05);
-      font-weight: 600;
-      color: #9ca3af;
-    }
-
-    tr:hover {
-      background: rgba(255, 255, 255, 0.02);
-    }
-
-    /* Status indicator styles */
-    .status-indicator {
-      display: inline-block;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      margin-right: 6px;
-    }
-
-    .status-good { background: #22c55e; }
-    .status-needs-maintenance { background: #f59e0b; }
-    .status-under-repair { background: #3b82f6; }
-    .status-broken { background: #ef4444; }
-    .status-closed { background: #6b7280; }
-
-    /* Dropdown styles */
-    .dropdown-menu {
-      display: none;
-      position: absolute;
-      right: 0;
-      top: 100%;
-      background: #1a1a1a;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 8px;
-      padding: 0.5rem;
-      min-width: 200px;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
-      z-index: 1000;
-    }
-
-    .dropdown-menu.show {
-      display: block;
-    }
-
-    .dropdown-item {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.75rem;
-      color: #e2e8f0;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      text-decoration: none;
-    }
-
-    .dropdown-item:hover {
-      background: rgba(251, 191, 36, 0.1);
-      color: #fbbf24;
-    }
-
-    .dropdown-header {
-      padding: 0.75rem;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    .dropdown-header h3 {
-      font-weight: 600;
-      color: #fbbf24;
-      margin: 0;
-      font-size: 0.9rem;
-    }
-
-    .dropdown-header p {
-      color: #9ca3af;
-      margin: 0.25rem 0 0 0;
-      font-size: 0.8rem;
-    }
-
-    .dropdown-divider {
-      height: 1px;
-      background: rgba(255, 255, 255, 0.1);
-      margin: 0.5rem 0;
-    }
-
-    /* Main content adjustment */
-    main {
-      margin-left: 240px; /* Match sidebar width */
-      transition: margin-left 0.3s ease;
-    }
-
-    .sidebar-collapsed + main {
-      margin-left: 64px; /* Match collapsed sidebar width */
-    }
-
-    .urgent-indicator {
-      animation: pulse 2s infinite;
-      background: rgba(239, 68, 68, 0.1);
-    }
-    
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.7; }
-    }
-  </style>
-</head>
-<body class="min-h-screen">
-
-  <!-- Topbar -->
-  <header class="topbar flex items-center justify-between px-4 py-3 shadow">
-    <div class="flex items-center space-x-3">
-      <button id="toggleSidebar" class="text-gray-300 hover:text-yellow-400 transition-colors p-1 rounded-lg hover:bg-white/5">
-        <i data-lucide="menu" class="w-5 h-5"></i>
-      </button>
-      <h1 class="text-lg font-bold text-yellow-400">BOIYETS FITNESS GYM</h1>
-    </div>
-    <div class="flex items-center space-x-3">
-      <!-- Chat Button -->
-      <a href="chat.php" class="text-gray-300 hover:text-blue-400 transition-colors p-2 rounded-lg hover:bg-white/5 relative">
-        <i data-lucide="message-circle"></i>
-        <?php if ($unread_count > 0): ?>
-          <span class="absolute -top-1 -right-1 bg-red-500 text-xs rounded-full h-5 w-5 flex items-center justify-center" id="chatBadge">
-            <?php echo $unread_count; ?>
-          </span>
-        <?php endif; ?>
-      </a>
-
-      <div class="h-8 w-px bg-gray-700 mx-1"></div>
-      
-      <!-- User Profile Dropdown -->
-      <div class="dropdown-container">
-        <button id="userMenuButton" class="flex items-center space-x-2 text-gray-300 hover:text-yellow-400 transition-colors p-2 rounded-lg hover:bg-white/5">
-          <img src="<?php echo htmlspecialchars($_SESSION['profile_picture'] ?? 'https://i.pravatar.cc/40'); ?>" class="w-8 h-8 rounded-full border border-gray-600" id="userAvatar" />
-          <span class="text-sm font-medium hidden md:inline" id="userName">
-            <?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['username']); ?>
-          </span>
-          <i data-lucide="chevron-down" class="w-4 h-4"></i>
-        </button>
-        <div id="userDropdown" class="dropdown-menu">
-          <div class="dropdown-header">
-            <h3><?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['username']); ?></h3>
-            <p><?php echo htmlspecialchars($_SESSION['role'] ?? 'User'); ?></p>
-          </div>
-          <a href="profile.php" class="dropdown-item">
-            <i data-lucide="user"></i>
-            <span>Profile</span>
-          </a>
-          <a href="settings.php" class="dropdown-item">
-            <i data-lucide="settings"></i>
-            <span>Settings</span>
-          </a>
-          <div class="dropdown-divider"></div>
-          <a href="logout.php" class="dropdown-item">
-            <i data-lucide="log-out"></i>
-            <span>Logout</span>
-          </a>
-        </div>
-      </div>
-    </div>
-  </header>
+<?php
+require_once 'includes/admin_header.php';
+if ($_SESSION['role'] === 'admin') {
+    require_once 'includes/admin_sidebar.php';
+} else {
+    require_once 'includes/trainer_sidebar.php';
+}
+?>
 
   <div class="flex">
-    <!-- Sidebar -->
-    <aside id="sidebar" class="sidebar w-60 bg-[#0d0d0d] h-screen p-3 space-y-2 flex flex-col overflow-y-auto border-r border-gray-800">
-      <nav class="space-y-1 flex-1">
-        <a href="admin_dashboard.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="home"></i>
-            <span class="text-sm font-medium">Dashboard</span>
-          </div>
-          <span class="tooltip">Dashboard</span>
-        </a>
-
-        <a href="view_users.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="users"></i>
-            <span class="text-sm font-medium">View All Users</span>
-          </div>
-          <span class="tooltip">View All Users</span>
-        </a>
-
-        <a href="revenue.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="dollar-sign"></i>
-            <span class="text-sm font-medium">Revenue Tracking</span>
-          </div>
-          <span class="tooltip">Revenue Tracking</span>
-        </a>
-
-        <a href="products.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="package"></i>
-            <span class="text-sm font-medium">Products & Inventory</span>
-          </div>
-          <span class="tooltip">Products & Inventory</span>
-        </a>
-
-        <a href="adminannouncement.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="megaphone"></i>
-            <span class="text-sm font-medium">Announcements</span>
-          </div>
-          <span class="tooltip">Announcements</span>
-        </a>
-
-        <a href="equipment_monitoring.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="wrench"></i>
-            <span class="text-sm font-medium">Equipment Monitoring</span>
-          </div>
-          <span class="tooltip">Equipment Monitoring</span>
-        </a>
-
-        <a href="maintenance_report.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="alert-triangle"></i>
-            <span class="text-sm font-medium">Maintenance Report</span>
-          </div>
-          <span class="tooltip">Maintenance Report</span>
-        </a>
-
-        <a href="feedbacksadmin.php" class="sidebar-item active">
-          <div class="flex items-center">
-            <i data-lucide="message-square"></i>
-            <span class="text-sm font-medium">Feedback & Reports</span>
-          </div>
-          <span class="tooltip">Feedback & Reports</span>
-        </a>
-
-        <div class="pt-4 border-t border-gray-800 mt-auto">
-          <a href="logout.php" class="sidebar-item">
-            <div class="flex items-center">
-              <i data-lucide="log-out"></i>
-              <span class="text-sm font-medium">Logout</span>
-            </div>
-            <span class="tooltip">Logout</span>
-          </a>
-        </div>
-      </nav>
-    </aside>
-
     <!-- Main Content -->
     <main class="flex-1 p-4 space-y-4 overflow-auto">
       <div class="flex justify-between items-center mb-6">
@@ -1195,36 +592,7 @@ $role = $_SESSION['role'] ?? 'trainer';
   </div>
 
   <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        lucide.createIcons();
-        
-        // Sidebar toggle
-        document.getElementById('toggleSidebar').addEventListener('click', () => {
-            const sidebar = document.getElementById('sidebar');
-            if (sidebar.classList.contains('w-60')) {
-                sidebar.classList.remove('w-60');
-                sidebar.classList.add('w-16', 'sidebar-collapsed');
-            } else {
-                sidebar.classList.remove('w-16', 'sidebar-collapsed');
-                sidebar.classList.add('w-60');
-            }
-        });
 
-        // Dropdown functionality
-        const userMenuButton = document.getElementById('userMenuButton');
-        const userDropdown = document.getElementById('userDropdown');
-
-        userMenuButton.addEventListener('click', (e) => {
-            e.stopPropagation();
-            userDropdown.classList.toggle('show');
-        });
-
-        document.addEventListener('click', (e) => {
-            if (!userMenuButton.contains(e.target) && !userDropdown.contains(e.target)) {
-                userDropdown.classList.remove('show');
-            }
-        });
-    });
 
     // Modal functions
     function openFeedbackModal(feedback) {
@@ -1381,8 +749,7 @@ $role = $_SESSION['role'] ?? 'trainer';
         });
     }
   </script>
-</body>
-</html>
+<?php require_once 'includes/admin_footer.php'; ?>
 
 <?php 
 // Close statements and connection properly

@@ -1,0 +1,18 @@
+PHP Warning:  Module "openssl" is already loaded in Unknown on line 0
+
+Warning: Module "openssl" is already loaded in Unknown on line 0
+Already refactored: trainerworkout.php
+Already refactored: trainermealplan.php
+Already refactored: trainermanageqrcodes.php
+Already refactored: trainer_equipment_monitoring.php
+Already refactored: trainer_maintenance_report.php
+Already refactored: feedbackstrainer.php
+Already refactored: attendance_logs.php
+Already refactored: member_registration.php
+Already refactored: membership_status.php
+Failed to find boundaries in all_members.php (HTML: -1, Sidebar: -1, Body: -1)
+  - No DOCTYPE found
+  - No </aside> found
+  - No </body> found
+Already refactored: clientprogress.php
+Already refactored: countersales.php

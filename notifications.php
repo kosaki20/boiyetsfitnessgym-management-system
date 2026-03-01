@@ -3,23 +3,6 @@
 session_start();
 header('Content-Type: application/json');
 
-/**
- * DATABASE CONNECTION - Direct connection without function
- */
-function getNotificationsDBConnection() {
-    $servername = "localhost";
-    $username = "root";
-    $password = "";
-    $dbname = "boiyetsdb";
-    
-    $conn = new mysqli($servername, $username, $password, $dbname);
-    
-    if ($conn->connect_error) {
-        throw new Exception("Database connection failed");
-    }
-    
-    return $conn;
-}
 
 /**
  * NOTIFICATION FUNCTIONS
@@ -222,7 +205,7 @@ try {
 
     $user_id = $_SESSION['user_id'];
     $user_role = $_SESSION['role'] ?? 'client';
-    $conn = getNotificationsDBConnection();
+    require_once 'includes/db_connection.php';
 
     // Handle POST requests (actions)
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {

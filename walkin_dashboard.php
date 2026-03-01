@@ -5,17 +5,7 @@ if (!isset($_SESSION['username']) || $_SESSION['role'] != 'client') {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
+require_once 'includes/db_connection.php';
 
 $logged_in_user_id = $_SESSION['user_id'];
 

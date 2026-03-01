@@ -1,31 +1,15 @@
 <?php
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
 session_start();
 
 // Handle AJAX requests FIRST, before any HTML output
 if (isset($_GET['ajax']) && $_GET['ajax'] == 'chart_data') {
-    // Set JSON header immediately
     header('Content-Type: application/json');
-    ob_clean(); // Clear any output buffers
+    ob_clean();
     
-    // Database connection for AJAX
-    $servername = "localhost";
-    $username = "root";
-    $password = "";
-    $dbname = "boiyetsdb";
-
-    $conn = new mysqli($servername, $username, $password, $dbname);
-
-    if ($conn->connect_error) {
-        echo json_encode(['success' => false, 'error' => 'Database connection failed']);
-        exit();
-    }
-
-    // Check if user is authenticated
+    require_once 'includes/admin_functions.php';
+    
     if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'admin') {
         echo json_encode(['success' => false, 'error' => 'Unauthorized']);
-        $conn->close();
         exit();
     }
 
@@ -35,304 +19,54 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'chart_data') {
     
     try {
         if ($tab == 'revenue') {
-            // Get daily revenue data - IMPROVED VERSION
-            $chart_sql = "SELECT 
-                            dates.date as date,
-                            COALESCE(SUM(re.amount), 0) as daily_revenue,
-                            COALESCE(SUM(mp.amount), 0) as membership_revenue,
-                            (COALESCE(SUM(re.amount), 0) + COALESCE(SUM(mp.amount), 0)) as total_revenue
-                          FROM (
-                            SELECT DATE(revenue_date) as date FROM revenue_entries 
-                            WHERE revenue_date BETWEEN ? AND ?
-                            UNION 
-                            SELECT DATE(payment_date) as date FROM membership_payments 
-                            WHERE payment_date BETWEEN ? AND ?
-                            AND status = 'completed'
-                            UNION
-                            SELECT DATE(? + INTERVAL seq.seq DAY) as date
-                            FROM (
-                                SELECT a.N + b.N * 10 + c.N * 100 as seq
-                                FROM (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) a
-                                CROSS JOIN (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) b
-                                CROSS JOIN (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) c
-                            ) seq
-                            WHERE DATE(? + INTERVAL seq.seq DAY) BETWEEN ? AND ?
-                          ) dates
-                          LEFT JOIN revenue_entries re ON dates.date = DATE(re.revenue_date)
-                          LEFT JOIN membership_payments mp ON dates.date = DATE(mp.payment_date) AND mp.status = 'completed'
-                          GROUP BY dates.date
-                          ORDER BY dates.date ASC";
+            $revenue_chart_data = getRevenueChartData($conn, $start_date, $end_date);
+            $category_results = getRevenueCategoryData($conn, $start_date, $end_date);
             
-            $chart_stmt = $conn->prepare($chart_sql);
-            if (!$chart_stmt) {
-                throw new Exception("Prepare failed: " . $conn->error);
-            }
-            
-            $chart_stmt->bind_param("ssssssss", $start_date, $end_date, $start_date, $end_date, $start_date, $start_date, $start_date, $end_date);
-            if (!$chart_stmt->execute()) {
-                throw new Exception("Execute failed: " . $chart_stmt->error);
-            }
-            $chart_result = $chart_stmt->get_result();
-            
-            $revenue_chart_data = [];
-            while($row = $chart_result->fetch_assoc()) {
-                $total_revenue = floatval($row['daily_revenue']) + floatval($row['membership_revenue']);
-                $revenue_chart_data[$row['date']] = $total_revenue;
-            }
-            $chart_stmt->close();
-            
-            // Get category data for chart - IMPROVED VERSION
-            $category_sql = "SELECT 
-                            'Membership Fees' as category_name,
-                            '#3b82f6' as category_color,
-                            COALESCE(SUM(mp.amount), 0) as total_amount,
-                            COUNT(mp.id) as transaction_count,
-                            COALESCE(AVG(mp.amount), 0) as average_amount
-                          FROM membership_payments mp
-                          WHERE mp.payment_date BETWEEN ? AND ?
-                          AND mp.status = 'completed'
-                          
-                          UNION ALL
-                          
-                          SELECT 
-                            rc.name as category_name,
-                            rc.color as category_color,
-                            COALESCE(SUM(re.amount), 0) as total_amount,
-                            COUNT(re.id) as transaction_count,
-                            COALESCE(AVG(re.amount), 0) as average_amount
-                          FROM revenue_categories rc
-                          LEFT JOIN revenue_entries re ON rc.id = re.category_id 
-                            AND re.revenue_date BETWEEN ? AND ?
-                          WHERE rc.id IN (1, 4)
-                          GROUP BY rc.id, rc.name, rc.color
-                          
-                          HAVING total_amount > 0
-                          ORDER BY total_amount DESC";
-            
-            $category_stmt = $conn->prepare($category_sql);
-            if (!$category_stmt) {
-                throw new Exception("Prepare failed: " . $category_stmt->error);
-            }
-            
-            $category_stmt->bind_param("ssss", $start_date, $end_date, $start_date, $end_date);
-            if (!$category_stmt->execute()) {
-                throw new Exception("Execute failed: " . $category_stmt->error);
-            }
-            $category_result = $category_stmt->get_result();
-            
-            $category_labels = [];
-            $category_data = [];
-            $category_colors = [];
-            $category_details = [];
-            
-            while($row = $category_result->fetch_assoc()) {
-                $category_labels[] = $row['category_name'];
-                $category_data[] = floatval($row['total_amount']);
-                $category_colors[] = $row['category_color'];
-                $category_details[] = [
-                    'transactions' => $row['transaction_count'],
-                    'average' => floatval($row['average_amount'])
-                ];
-            }
-            $category_stmt->close();
-            
-            // Generate chart labels with all dates in range
-            $chart_labels = [];
-            $chart_revenue = [];
-            
+            $chart_labels = []; $chart_revenue = [];
             $current_date = $start_date;
             while (strtotime($current_date) <= strtotime($end_date)) {
                 $date_key = date('Y-m-d', strtotime($current_date));
-                $label = date('M j', strtotime($current_date));
-                
-                $chart_labels[] = $label;
+                $chart_labels[] = date('M j', strtotime($current_date));
                 $chart_revenue[] = $revenue_chart_data[$date_key] ?? 0;
-                
                 $current_date = date('Y-m-d', strtotime($current_date . ' +1 day'));
             }
             
             echo json_encode([
                 'success' => true,
-                'line_chart' => [
-                    'labels' => $chart_labels,
-                    'data' => $chart_revenue
-                ],
-                'pie_chart' => [
-                    'labels' => $category_labels,
-                    'data' => $category_data,
-                    'colors' => $category_colors,
-                    'details' => $category_details
-                ]
+                'line_chart' => ['labels' => $chart_labels, 'data' => $chart_revenue],
+                'pie_chart' => $category_results
             ]);
             
         } elseif ($tab == 'expenses') {
-            // Get daily expenses for chart - IMPROVED VERSION
-            $chart_sql = "SELECT 
-                            dates.date as date,
-                            COALESCE(SUM(e.amount), 0) as daily_expenses
-                          FROM (
-                            SELECT DATE(expense_date) as date FROM expenses 
-                            WHERE expense_date BETWEEN ? AND ?
-                            UNION
-                            SELECT DATE(? + INTERVAL seq.seq DAY) as date
-                            FROM (
-                                SELECT a.N + b.N * 10 + c.N * 100 as seq
-                                FROM (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) a
-                                CROSS JOIN (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) b
-                                CROSS JOIN (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) c
-                            ) seq
-                            WHERE DATE(? + INTERVAL seq.seq DAY) BETWEEN ? AND ?
-                          ) dates
-                          LEFT JOIN expenses e ON dates.date = DATE(e.expense_date)
-                          GROUP BY dates.date 
-                          ORDER BY dates.date ASC";
+            $expense_chart_data = getExpenseChartData($conn, $start_date, $end_date);
+            $category_results = getExpenseCategoryData($conn, $start_date, $end_date);
             
-            $chart_stmt = $conn->prepare($chart_sql);
-            if (!$chart_stmt) {
-                throw new Exception("Prepare failed: " . $conn->error);
-            }
-            
-            $chart_stmt->bind_param("ssssss", $start_date, $end_date, $start_date, $start_date, $start_date, $end_date);
-            if (!$chart_stmt->execute()) {
-                throw new Exception("Execute failed: " . $chart_stmt->error);
-            }
-            $chart_result = $chart_stmt->get_result();
-            
-            $expense_chart_data = [];
-            while($row = $chart_result->fetch_assoc()) {
-                $expense_chart_data[$row['date']] = floatval($row['daily_expenses']);
-            }
-            $chart_stmt->close();
-            
-            // Get expense category data for chart
-            $category_sql = "SELECT 
-                            ec.name as category_name,
-                            ec.color as category_color,
-                            COALESCE(SUM(e.amount), 0) as total_amount,
-                            COUNT(e.id) as transaction_count,
-                            COALESCE(AVG(e.amount), 0) as average_amount
-                          FROM expense_categories ec
-                          LEFT JOIN expenses e ON ec.id = e.category_id AND e.expense_date BETWEEN ? AND ?
-                          GROUP BY ec.id, ec.name, ec.color
-                          HAVING total_amount > 0
-                          ORDER BY total_amount DESC";
-            
-            $category_stmt = $conn->prepare($category_sql);
-            if (!$category_stmt) {
-                throw new Exception("Prepare failed: " . $category_stmt->error);
-            }
-            
-            $category_stmt->bind_param("ss", $start_date, $end_date);
-            if (!$category_stmt->execute()) {
-                throw new Exception("Execute failed: " . $category_stmt->error);
-            }
-            $category_result = $category_stmt->get_result();
-            
-            $category_labels = [];
-            $category_data = [];
-            $category_colors = [];
-            $category_details = [];
-            
-            while($row = $category_result->fetch_assoc()) {
-                $category_labels[] = $row['category_name'];
-                $category_data[] = floatval($row['total_amount']);
-                $category_colors[] = $row['category_color'];
-                $category_details[] = [
-                    'transactions' => $row['transaction_count'],
-                    'average' => floatval($row['average_amount'])
-                ];
-            }
-            $category_stmt->close();
-            
-            // Generate chart labels with all dates in range
-            $chart_labels = [];
-            $chart_expenses = [];
-            
+            $chart_labels = []; $chart_expenses = [];
             $current_date = $start_date;
             while (strtotime($current_date) <= strtotime($end_date)) {
                 $date_key = date('Y-m-d', strtotime($current_date));
-                $label = date('M j', strtotime($current_date));
-                
-                $chart_labels[] = $label;
+                $chart_labels[] = date('M j', strtotime($current_date));
                 $chart_expenses[] = $expense_chart_data[$date_key] ?? 0;
-                
                 $current_date = date('Y-m-d', strtotime($current_date . ' +1 day'));
             }
             
             echo json_encode([
                 'success' => true,
-                'line_chart' => [
-                    'labels' => $chart_labels,
-                    'data' => $chart_expenses
-                ],
-                'pie_chart' => [
-                    'labels' => $category_labels,
-                    'data' => $category_data,
-                    'colors' => $category_colors,
-                    'details' => $category_details
-                ]
+                'line_chart' => ['labels' => $chart_labels, 'data' => $chart_expenses],
+                'pie_chart' => $category_results
             ]);
             
         } elseif ($tab == 'profit') {
-            // Improved profit SQL query with complete date range
-            $profit_sql = "SELECT 
-                            dates.date as date,
-                            COALESCE(SUM(re.amount), 0) + COALESCE(SUM(mp.amount), 0) as revenue,
-                            COALESCE(SUM(e.amount), 0) as expenses,
-                            (COALESCE(SUM(re.amount), 0) + COALESCE(SUM(mp.amount), 0) - COALESCE(SUM(e.amount), 0)) as profit
-                          FROM (
-                            SELECT DATE(? + INTERVAL seq.seq DAY) as date
-                            FROM (
-                                SELECT a.N + b.N * 10 + c.N * 100 as seq
-                                FROM (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) a
-                                CROSS JOIN (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) b
-                                CROSS JOIN (SELECT 0 AS N UNION SELECT 1 UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9) c
-                            ) seq
-                            WHERE DATE(? + INTERVAL seq.seq DAY) BETWEEN ? AND ?
-                          ) dates
-                          LEFT JOIN revenue_entries re ON dates.date = DATE(re.revenue_date)
-                          LEFT JOIN membership_payments mp ON dates.date = DATE(mp.payment_date) AND mp.status = 'completed'
-                          LEFT JOIN expenses e ON dates.date = DATE(e.expense_date)
-                          GROUP BY dates.date
-                          ORDER BY dates.date ASC";
+            $profit_chart_data = getProfitChartData($conn, $start_date, $end_date);
             
-            $profit_stmt = $conn->prepare($profit_sql);
-            if (!$profit_stmt) {
-                throw new Exception("Prepare failed: " . $conn->error);
-            }
-            
-            $profit_stmt->bind_param("ssss", $start_date, $start_date, $start_date, $end_date);
-            if (!$profit_stmt->execute()) {
-                throw new Exception("Execute failed: " . $profit_stmt->error);
-            }
-            $profit_result = $profit_stmt->get_result();
-            
-            $profit_data = [];
-            while($row = $profit_result->fetch_assoc()) {
-                $profit_data[$row['date']] = [
-                    'revenue' => floatval($row['revenue']),
-                    'expenses' => floatval($row['expenses']),
-                    'profit' => floatval($row['profit'])
-                ];
-            }
-            $profit_stmt->close();
-            
-            // Generate chart labels and data with all dates in range
-            $chart_labels = [];
-            $chart_revenue = [];
-            $chart_expenses = [];
-            $chart_profit = [];
-            
+            $chart_labels = []; $chart_revenue = []; $chart_expenses = []; $chart_profit = [];
             $current_date = $start_date;
             while (strtotime($current_date) <= strtotime($end_date)) {
                 $date_key = date('Y-m-d', strtotime($current_date));
-                $label = date('M j', strtotime($current_date));
-                
-                $chart_labels[] = $label;
-                $chart_revenue[] = $profit_data[$date_key]['revenue'] ?? 0;
-                $chart_expenses[] = $profit_data[$date_key]['expenses'] ?? 0;
-                $chart_profit[] = $profit_data[$date_key]['profit'] ?? 0;
-                
+                $chart_labels[] = date('M j', strtotime($current_date));
+                $chart_revenue[] = $profit_chart_data[$date_key]['revenue'] ?? 0;
+                $chart_expenses[] = $profit_chart_data[$date_key]['expenses'] ?? 0;
+                $chart_profit[] = $profit_chart_data[$date_key]['profit'] ?? 0;
                 $current_date = date('Y-m-d', strtotime($current_date . ' +1 day'));
             }
             
@@ -346,14 +80,9 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'chart_data') {
                 ]
             ]);
         }
-        
     } catch (Exception $e) {
-        echo json_encode([
-            'success' => false,
-            'error' => $e->getMessage()
-        ]);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
     }
-    
     $conn->close();
     exit();
 }
@@ -363,18 +92,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'notifications') {
     header('Content-Type: application/json');
     ob_clean();
     
-    // Database connection for AJAX
-    $servername = "localhost";
-    $username = "root";
-    $password = "";
-    $dbname = "boiyetsdb";
-
-    $conn = new mysqli($servername, $username, $password, $dbname);
-
-    if ($conn->connect_error) {
-        echo json_encode(['success' => false, 'error' => 'Database connection failed']);
-        exit();
-    }
+    // Use centralized database connection
+    require_once 'includes/db_connection.php';
 
     // Check if user is authenticated
     if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'admin') {
@@ -425,45 +144,15 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'notifications') {
     exit();
 }
 
-// Helper function for time ago
-function time_ago($datetime) {
-    $time = strtotime($datetime);
-    $now = time();
-    $diff = $now - $time;
-    
-    if ($diff < 60) {
-        return 'just now';
-    } elseif ($diff < 3600) {
-        $mins = floor($diff / 60);
-        return $mins . ' min' . ($mins > 1 ? 's' : '') . ' ago';
-    } elseif ($diff < 86400) {
-        $hours = floor($diff / 3600);
-        return $hours . ' hour' . ($hours > 1 ? 's' : '') . ' ago';
-    } elseif ($diff < 2592000) {
-        $days = floor($diff / 86400);
-        return $days . ' day' . ($days > 1 ? 's' : '') . ' ago';
-    } else {
-        return date('M j, Y', $time);
-    }
-}
-
 // REGULAR PAGE LOAD
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'admin') {
     header("Location: index.php");
     exit();
 }
 
-// Database connection for regular page load
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
+// Use centralized database connection
+require_once 'includes/db_connection.php';
+require_once 'includes/admin_functions.php';
 
 // Generate CSRF token
 if (empty($_SESSION['csrf_token'])) {
@@ -500,203 +189,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         exit();
     }
 
-    // Revenue entries
-    if (isset($_POST['add_revenue'])) {
-        $category_id = (int)$_POST['category_id'];
-        $amount = filter_var($_POST['amount'], FILTER_VALIDATE_FLOAT);
-        $description = trim($_POST['description']);
-        $payment_method = $_POST['payment_method'];
-        $reference_id = !empty($_POST['reference_id']) ? (int)$_POST['reference_id'] : NULL;
-        $reference_name = !empty($_POST['reference_name']) ? trim($_POST['reference_name']) : NULL;
-        $revenue_date = $_POST['revenue_date'];
-        $notes = !empty($_POST['notes']) ? trim($_POST['notes']) : NULL;
-        $recorded_by = $_SESSION['user_id'];
+    $result = null;
+    if (isset($_POST['add_revenue']) || isset($_POST['update_revenue']) || isset($_POST['delete_revenue'])) {
+        $result = handleRevenueAction($conn, $_POST, $_SESSION['user_id']);
+        $tab_redirect = "revenue";
+    } elseif (isset($_POST['add_expense']) || isset($_POST['update_expense']) || isset($_POST['delete_expense'])) {
+        $result = handleExpenseAction($conn, $_POST, $_SESSION['user_id']);
+        $tab_redirect = "expenses";
+    }
 
-        // Validate inputs
-        if ($amount === false || $amount <= 0) {
-            $_SESSION['error'] = "Please enter a valid amount greater than 0.";
-        } elseif (empty($description)) {
-            $_SESSION['error'] = "Please enter a description.";
-        } elseif (empty($category_id)) {
-            $_SESSION['error'] = "Please select a category.";
-        } elseif (!in_array($category_id, [1, 4])) {
-            $_SESSION['error'] = "Please select a valid category.";
-        } else {
-            $sql = "INSERT INTO revenue_entries (category_id, amount, description, payment_method, reference_id, reference_name, revenue_date, recorded_by, notes) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            $stmt = $conn->prepare($sql);
-            
-            if ($stmt) {
-                $stmt->bind_param("idssisiss", $category_id, $amount, $description, $payment_method, $reference_id, $reference_name, $revenue_date, $recorded_by, $notes);
-                
-                if ($stmt->execute()) {
-                    $_SESSION['success'] = "Revenue entry added successfully!";
-                } else {
-                    $_SESSION['error'] = "Error adding revenue entry: " . $stmt->error;
-                }
-                $stmt->close();
-            } else {
-                $_SESSION['error'] = "Error preparing statement: " . $conn->error;
-            }
-        }
-        
-        header("Location: revenue.php?tab=revenue");
-        exit();
-    }
-    
-    if (isset($_POST['update_revenue'])) {
-        $id = (int)$_POST['entry_id'];
-        $category_id = (int)$_POST['category_id'];
-        $amount = filter_var($_POST['amount'], FILTER_VALIDATE_FLOAT);
-        $description = trim($_POST['description']);
-        $payment_method = $_POST['payment_method'];
-        $reference_id = !empty($_POST['reference_id']) ? (int)$_POST['reference_id'] : NULL;
-        $reference_name = !empty($_POST['reference_name']) ? trim($_POST['reference_name']) : NULL;
-        $revenue_date = $_POST['revenue_date'];
-        $notes = !empty($_POST['notes']) ? trim($_POST['notes']) : NULL;
-
-        // Validate inputs
-        if ($amount === false || $amount <= 0) {
-            $_SESSION['error'] = "Please enter a valid amount greater than 0.";
-        } elseif (empty($description)) {
-            $_SESSION['error'] = "Please enter a description.";
-        } elseif (!in_array($category_id, [1, 4])) {
-            $_SESSION['error'] = "Please select a valid category.";
-        } else {
-            $sql = "UPDATE revenue_entries SET category_id=?, amount=?, description=?, payment_method=?, reference_id=?, reference_name=?, revenue_date=?, notes=? WHERE id=?";
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param("idssisisi", $category_id, $amount, $description, $payment_method, $reference_id, $reference_name, $revenue_date, $notes, $id);
-            
-            if ($stmt->execute()) {
-                $_SESSION['success'] = "Revenue entry updated successfully!";
-            } else {
-                $_SESSION['error'] = "Error updating revenue entry: " . $conn->error;
-            }
-            $stmt->close();
-        }
-        header("Location: revenue.php?tab=revenue");
-        exit();
-    }
-    
-    if (isset($_POST['delete_revenue'])) {
-        $id = (int)$_POST['entry_id'];
-        
-        // Verify the entry exists and belongs to current user
-        $check_sql = "SELECT id FROM revenue_entries WHERE id = ? AND recorded_by = ?";
-        $check_stmt = $conn->prepare($check_sql);
-        $check_stmt->bind_param("ii", $id, $_SESSION['user_id']);
-        $check_stmt->execute();
-        $check_result = $check_stmt->get_result();
-        
-        if ($check_result->num_rows > 0) {
-            $sql = "DELETE FROM revenue_entries WHERE id=?";
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param("i", $id);
-            
-            if ($stmt->execute()) {
-                $_SESSION['success'] = "Revenue entry deleted successfully!";
-            } else {
-                $_SESSION['error'] = "Error deleting revenue entry: " . $conn->error;
-            }
-            $stmt->close();
-        } else {
-            $_SESSION['error'] = "Revenue entry not found or you don't have permission to delete it.";
-        }
-        $check_stmt->close();
-        header("Location: revenue.php?tab=revenue");
-        exit();
-    }
-    
-    // Expense entries
-    if (isset($_POST['add_expense'])) {
-        $category_id = (int)$_POST['expense_category_id'];
-        $amount = filter_var($_POST['expense_amount'], FILTER_VALIDATE_FLOAT);
-        $description = trim($_POST['expense_description']);
-        $payment_method = $_POST['expense_payment_method'];
-        $expense_date = $_POST['expense_date'];
-        $notes = !empty($_POST['expense_notes']) ? trim($_POST['expense_notes']) : NULL;
-        $recorded_by = $_SESSION['user_id'];
-
-        // Validate inputs
-        if ($amount === false || $amount <= 0) {
-            $_SESSION['error'] = "Please enter a valid amount greater than 0.";
-        } elseif (empty($description)) {
-            $_SESSION['error'] = "Please enter a description.";
-        } elseif (empty($category_id)) {
-            $_SESSION['error'] = "Please select a category.";
-        } else {
-            $sql = "INSERT INTO expenses (category_id, amount, description, payment_method, expense_date, recorded_by, notes) 
-                    VALUES (?, ?, ?, ?, ?, ?, ?)";
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param("idsssis", $category_id, $amount, $description, $payment_method, $expense_date, $recorded_by, $notes);
-            
-            if ($stmt->execute()) {
-                $_SESSION['success'] = "Expense entry added successfully!";
-            } else {
-                $_SESSION['error'] = "Error adding expense entry: " . $stmt->error;
-            }
-            $stmt->close();
-        }
-        header("Location: revenue.php?tab=expenses");
-        exit();
-    }
-    
-    if (isset($_POST['update_expense'])) {
-        $id = (int)$_POST['expense_id'];
-        $category_id = (int)$_POST['expense_category_id'];
-        $amount = filter_var($_POST['expense_amount'], FILTER_VALIDATE_FLOAT);
-        $description = trim($_POST['expense_description']);
-        $payment_method = $_POST['expense_payment_method'];
-        $expense_date = $_POST['expense_date'];
-        $notes = !empty($_POST['expense_notes']) ? trim($_POST['expense_notes']) : NULL;
-
-        // Validate inputs
-        if ($amount === false || $amount <= 0) {
-            $_SESSION['error'] = "Please enter a valid amount greater than 0.";
-        } elseif (empty($description)) {
-            $_SESSION['error'] = "Please enter a description.";
-        } else {
-            $sql = "UPDATE expenses SET category_id=?, amount=?, description=?, payment_method=?, expense_date=?, notes=? WHERE id=?";
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param("idssssi", $category_id, $amount, $description, $payment_method, $expense_date, $notes, $id);
-            
-            if ($stmt->execute()) {
-                $_SESSION['success'] = "Expense entry updated successfully!";
-            } else {
-                $_SESSION['error'] = "Error updating expense entry: " . $conn->error;
-            }
-            $stmt->close();
-        }
-        header("Location: revenue.php?tab=expenses");
-        exit();
-    }
-    
-    if (isset($_POST['delete_expense'])) {
-        $id = (int)$_POST['expense_id'];
-        
-        // Verify the entry exists and belongs to current user
-        $check_sql = "SELECT id FROM expenses WHERE id = ? AND recorded_by = ?";
-        $check_stmt = $conn->prepare($check_sql);
-        $check_stmt->bind_param("ii", $id, $_SESSION['user_id']);
-        $check_stmt->execute();
-        $check_result = $check_stmt->get_result();
-        
-        if ($check_result->num_rows > 0) {
-            $sql = "DELETE FROM expenses WHERE id=?";
-            $stmt = $conn->prepare($sql);
-            $stmt->bind_param("i", $id);
-            
-            if ($stmt->execute()) {
-                $_SESSION['success'] = "Expense entry deleted successfully!";
-            } else {
-                $_SESSION['error'] = "Error deleting expense entry: " . $conn->error;
-            }
-            $stmt->close();
-        } else {
-            $_SESSION['error'] = "Expense entry not found or you don't have permission to delete it.";
-        }
-        $check_stmt->close();
-        header("Location: revenue.php?tab=expenses");
+    if ($result) {
+        if (isset($result['success'])) $_SESSION['success'] = $result['success'];
+        if (isset($result['error'])) $_SESSION['error'] = $result['error'];
+        header("Location: revenue.php?tab=$tab_redirect");
         exit();
     }
 }
@@ -755,222 +260,30 @@ $expense_params = [$start_date, $end_date];
 $revenue_types = "ss";
 $expense_types = "ss";
 
-if ($category_filter) {
-    if ($tab == 'revenue') {
-        $revenue_where_conditions[] = "re.category_id = ?";
-        $revenue_params[] = $category_filter;
-        $revenue_types .= "i";
-    } elseif ($tab == 'expenses') {
-        $expense_where_conditions[] = "e.category_id = ?";
-        $expense_params[] = $category_filter;
-        $expense_types .= "i";
-    }
-}
+// Get filtered entries using centralized functions
+$revenue_result = getRevenueEntries($conn, $start_date, $end_date, $category_filter, $payment_filter, $search);
+$expense_result = getExpenseEntries($conn, $start_date, $end_date, $category_filter, $payment_filter, $search);
 
-if ($payment_filter) {
-    if ($tab == 'revenue') {
-        $revenue_where_conditions[] = "re.payment_method = ?";
-        $revenue_params[] = $payment_filter;
-        $revenue_types .= "s";
-    } elseif ($tab == 'expenses') {
-        $expense_where_conditions[] = "e.payment_method = ?";
-        $expense_params[] = $payment_filter;
-        $expense_types .= "s";
-    }
-}
-
-if ($search) {
-    if ($tab == 'revenue') {
-        $revenue_where_conditions[] = "(re.description LIKE ? OR re.reference_name LIKE ? OR rc.name LIKE ?)";
-        $revenue_params[] = "%$search%";
-        $revenue_params[] = "%$search%";
-        $revenue_params[] = "%$search%";
-        $revenue_types .= "sss";
-    } elseif ($tab == 'expenses') {
-        $expense_where_conditions[] = "(e.description LIKE ? OR ec.name LIKE ?)";
-        $expense_params[] = "%$search%";
-        $expense_params[] = "%$search%";
-        $expense_types .= "ss";
-    }
-}
-
-$revenue_where_sql = implode(" AND ", $revenue_where_conditions);
-$expense_where_sql = implode(" AND ", $expense_where_conditions);
-
-// Get revenue entries
-$revenue_sql = "SELECT re.*, rc.name as category_name, rc.color as category_color, u.username as recorded_by_name
-        FROM revenue_entries re
-        JOIN revenue_categories rc ON re.category_id = rc.id
-        JOIN users u ON re.recorded_by = u.id
-        WHERE $revenue_where_sql
-        ORDER BY re.revenue_date DESC, re.created_at DESC";
-
-$revenue_stmt = $conn->prepare($revenue_sql);
-if ($revenue_stmt && !empty($revenue_params)) {
-    $revenue_stmt->bind_param($revenue_types, ...$revenue_params);
-    $revenue_stmt->execute();
-    $revenue_result = $revenue_stmt->get_result();
-} else {
-    $revenue_result = false;
-}
-
-// Get expense entries
-$expense_sql = "SELECT e.*, ec.name as category_name, ec.color as category_color, u.username as recorded_by_name
-        FROM expenses e
-        JOIN expense_categories ec ON e.category_id = ec.id
-        JOIN users u ON e.recorded_by = u.id
-        WHERE $expense_where_sql
-        ORDER BY e.expense_date DESC, e.created_at DESC";
-
-$expense_stmt = $conn->prepare($expense_sql);
-if ($expense_stmt && !empty($expense_params)) {
-    $expense_stmt->bind_param($expense_types, ...$expense_params);
-    $expense_stmt->execute();
-    $expense_result = $expense_stmt->get_result();
-} else {
-    $expense_result = false;
-}
-
-// Calculate financial metrics - IMPROVED VERSION
-$total_revenue = 0;
-$total_transactions = 0;
-
-// Get ALL revenue including membership payments within date range - IMPROVED QUERY
-$revenue_stats_sql = "SELECT 
-                'revenue_entries' as source,
-                COUNT(re.id) as transaction_count,
-                COALESCE(SUM(re.amount), 0) as total_amount
-              FROM revenue_entries re
-              WHERE re.revenue_date BETWEEN ? AND ?
-              
-              UNION ALL
-              
-              SELECT 
-                'membership_payments' as source,
-                COUNT(mp.id) as transaction_count,
-                COALESCE(SUM(mp.amount), 0) as total_amount
-              FROM membership_payments mp
-              WHERE mp.payment_date BETWEEN ? AND ?
-              AND mp.status = 'completed'";
-
-$revenue_stats_stmt = $conn->prepare($revenue_stats_sql);
-if ($revenue_stats_stmt) {
-    $revenue_stats_stmt->bind_param("ssss", $start_date, $end_date, $start_date, $end_date);
-    $revenue_stats_stmt->execute();
-    $revenue_stats_result = $revenue_stats_stmt->get_result();
-    
-    if ($revenue_stats_result) {
-        while($row = $revenue_stats_result->fetch_assoc()) {
-            $total_revenue += $row['total_amount'] ?? 0;
-            $total_transactions += $row['transaction_count'] ?? 0;
-        }
-    }
-    $revenue_stats_stmt->close();
-}
-
-// Get detailed membership revenue breakdown by plan type
-$membership_breakdown_sql = "SELECT 
-                mp.plan_type,
-                COUNT(mp.id) as transaction_count,
-                COALESCE(SUM(mp.amount), 0) as total_amount,
-                COALESCE(AVG(mp.amount), 0) as average_amount
-              FROM membership_payments mp
-              WHERE mp.payment_date BETWEEN ? AND ?
-              AND mp.status = 'completed'
-              GROUP BY mp.plan_type
-              ORDER BY total_amount DESC";
-
-$membership_breakdown_stmt = $conn->prepare($membership_breakdown_sql);
-$membership_breakdown = [];
-if ($membership_breakdown_stmt) {
-    $membership_breakdown_stmt->bind_param("ss", $start_date, $end_date);
-    $membership_breakdown_stmt->execute();
-    $membership_breakdown_result = $membership_breakdown_stmt->get_result();
-    while($row = $membership_breakdown_result->fetch_assoc()) {
-        $membership_breakdown[] = $row;
-    }
-    $membership_breakdown_stmt->close();
-}
-
-$total_expenses = 0;
-$total_expense_transactions = 0;
-
-$expense_stats_sql = "SELECT 
-                COUNT(e.id) as transaction_count,
-                COALESCE(SUM(e.amount), 0) as total_amount
-              FROM expenses e
-              WHERE e.expense_date BETWEEN ? AND ?";
-
-$expense_stats_stmt = $conn->prepare($expense_stats_sql);
-if ($expense_stats_stmt) {
-    $expense_stats_stmt->bind_param("ss", $start_date, $end_date);
-    $expense_stats_stmt->execute();
-    $expense_stats_result = $expense_stats_stmt->get_result();
-    if ($expense_stats_result) {
-        $expense_stats = $expense_stats_result->fetch_assoc();
-        $total_expenses = $expense_stats['total_amount'] ?? 0;
-        $total_expense_transactions = $expense_stats['transaction_count'] ?? 0;
-    }
-    $expense_stats_stmt->close();
-}
+// Calculate financial metrics using centralized functions
+$summary = getFinancialSummary($conn, $start_date, $end_date);
+$total_revenue = $summary['total_revenue'];
+$total_transactions = $summary['total_transactions'];
+$total_expenses = $summary['total_expenses'];
+$total_expense_transactions = $summary['total_expense_transactions'];
 
 $net_profit = $total_revenue - $total_expenses;
 $expense_ratio = $total_revenue > 0 ? ($total_expenses / $total_revenue) * 100 : 0;
 
-// Get revenue statistics by category - IMPROVED VERSION
-$revenue_stats_sql = "SELECT 
-                'Membership Fees' as category_name,
-                '#3b82f6' as category_color,
-                COUNT(mp.id) as transaction_count,
-                COALESCE(SUM(mp.amount), 0) as total_amount,
-                COALESCE(AVG(mp.amount), 0) as average_amount
-              FROM membership_payments mp
-              WHERE mp.payment_date BETWEEN ? AND ?
-              AND mp.status = 'completed'
-              
-              UNION ALL
-              
-              SELECT 
-                rc.name as category_name,
-                rc.color as category_color,
-                COUNT(re.id) as transaction_count,
-                COALESCE(SUM(re.amount), 0) as total_amount,
-                COALESCE(AVG(re.amount), 0) as average_amount
-              FROM revenue_categories rc
-              LEFT JOIN revenue_entries re ON rc.id = re.category_id AND re.revenue_date BETWEEN ? AND ?
-              WHERE rc.id IN (1, 4)
-              GROUP BY rc.id, rc.name, rc.color
-              ORDER BY total_amount DESC";
-
-$revenue_stats_stmt = $conn->prepare($revenue_stats_sql);
-if ($revenue_stats_stmt) {
-    $revenue_stats_stmt->bind_param("ssss", $start_date, $end_date, $start_date, $end_date);
-    $revenue_stats_stmt->execute();
-    $revenue_stats_result = $revenue_stats_stmt->get_result();
-} else {
-    $revenue_stats_result = false;
+// Get membership breakdown
+$membership_breakdown_result = getMembershipBreakdown($conn, $start_date, $end_date);
+$membership_breakdown = [];
+while($row = $membership_breakdown_result->fetch_assoc()) {
+    $membership_breakdown[] = $row;
 }
 
-// Get expense statistics by category
-$expense_stats_sql = "SELECT 
-                ec.name as category_name,
-                ec.color as category_color,
-                COUNT(e.id) as transaction_count,
-                COALESCE(SUM(e.amount), 0) as total_amount,
-                COALESCE(AVG(e.amount), 0) as average_amount
-              FROM expense_categories ec
-              LEFT JOIN expenses e ON ec.id = e.category_id AND e.expense_date BETWEEN ? AND ?
-              GROUP BY ec.id, ec.name, ec.color
-              ORDER BY total_amount DESC";
-
-$expense_stats_stmt = $conn->prepare($expense_stats_sql);
-if ($expense_stats_stmt) {
-    $expense_stats_stmt->bind_param("ss", $start_date, $end_date);
-    $expense_stats_stmt->execute();
-    $expense_stats_result = $expense_stats_stmt->get_result();
-} else {
-    $expense_stats_result = false;
-}
+// Use centralized functions for category statistics (returning mysqli_result)
+$revenue_stats_result = getRevenueCategoryStats($conn, $start_date, $end_date);
+$expense_stats_result = getExpenseCategoryStats($conn, $start_date, $end_date);
 
 $username = $_SESSION['username'] ?? 'Admin';
 ?>
@@ -985,142 +298,509 @@ $username = $_SESSION['username'] ?? 'Admin';
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
-    /* All your existing CSS styles remain the same */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    * {
-      font-family: 'Inter', sans-serif;
+    /* Custom styles for revenue tracking page */
+    .button-sm { 
+      padding: 0.5rem 0.75rem; 
+      font-size: 0.8rem; 
+      border-radius: 8px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s ease;
+      border: none;
+      cursor: pointer;
     }
     
-    body {
-      background: linear-gradient(135deg, #111 0%, #0a0a0a 100%);
+    .button-sm:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+    }
+    
+    .btn-primary {
+      background: rgba(251, 191, 36, 0.2);
+      color: #fbbf24;
+    }
+    
+    .btn-primary:hover {
+      background: rgba(251, 191, 36, 0.3);
+    }
+    
+    .btn-active {
+      background: #fbbf24;
+      color: white;
+    }
+    
+    .btn-outline {
+      background: transparent;
+      border: 1px solid #fbbf24;
+      color: #fbbf24;
+    }
+    
+    .btn-outline:hover {
+      background: #fbbf24;
+      color: white;
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+      border: 1px solid #ef4444;
+    }
+    
+    .btn-danger:hover {
+      background: #ef4444;
+      color: white;
+    }
+
+    .chart-container {
+      width: 100%;
+      height: 300px;
+      position: relative;
+    }
+    
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.75rem;
+    }
+    
+    .stat-card {
+      background: rgba(251, 191, 36, 0.1);
+      border-left: 4px solid #fbbf24;
+    }
+    
+    .expense-card {
+      background: rgba(239, 68, 68, 0.1);
+      border-left: 4px solid #ef4444;
+    }
+    
+    .profit-card {
+      background: rgba(34, 197, 94, 0.1);
+      border-left: 4px solid #22c55e;
+    }
+    
+    .membership-card {
+      background: rgba(59, 130, 246, 0.1);
+      border-left: 4px solid #3b82f6;
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: #6b7280;
+    }
+    
+    .empty-state i {
+      margin-bottom: 1rem;
+      opacity: 0.5;
+    }
+    
+    .badge {
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+    
+    .badge-active {
+      background: rgba(34, 197, 94, 0.2);
+      color: #22c55e;
+    }
+    
+    .badge-expired {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+    }
+    
+    .badge-client {
+      background: rgba(59, 130, 246, 0.2);
+      color: #3b82f6;
+    }
+    
+    .badge-walkin {
+      background: rgba(168, 85, 247, 0.2);
+      color: #a855f7;
+    }
+
+    /* Modal styles */
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      z-index: 1000;
+      backdrop-filter: blur(5px);
+    }
+    
+    .modal-content {
+      background: #1a1a1a;
+      margin: 2rem auto;
+      padding: 2rem;
+      border-radius: 12px;
+      max-width: 500px;
+      width: 90%;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      max-height: 90vh;
+      overflow-y: auto;
       color: #e2e8f0;
     }
     
-    .sidebar { 
-      flex-shrink: 0; 
-      transition: all 0.3s ease;
-      overflow-y: auto;
-      -ms-overflow-style: none;
-      scrollbar-width: none;
+    .form-input {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 0.75rem;
+      color: white;
+      width: 100%;
+      transition: all 0.2s ease;
     }
-    .sidebar::-webkit-scrollbar {
+    
+    .form-input:focus {
+      outline: none;
+      border-color: #fbbf24;
+      box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+    }
+    
+    .form-label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: #9ca3af;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Tab styles */
+    .tab-container {
+      display: flex;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      margin-bottom: 1rem;
+    }
+    
+    .tab {
+      padding: 0.75rem 1.5rem;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s ease;
+      color: #9ca3af;
+    }
+    
+    .tab.active {
+      color: #fbbf24;
+      border-bottom-color: #fbbf24;
+      background: rgba(251, 191, 36, 0.05);
+    }
+    
+    .tab:hover {
+      color: #fbbf24;
+      background: rgba(251, 191, 36, 0.05);
+    }
+    
+    .tab-content {
       display: none;
     }
     
-    .tooltip {
-      position: absolute;
-      left: 100%;
-      top: 50%;
-      transform: translateY(-50%) translateX(-10px);
-      margin-left: 6px;
-      background: rgba(0,0,0,0.9);
-      color: #fff;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 0.75rem;
-      white-space: nowrap;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.2s ease, transform 0.2s ease;
-      z-index: 50;
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-    
-    .sidebar-collapsed .sidebar-item .text-sm { 
-      display: none; 
-    }
-    
-    .sidebar-collapsed .sidebar-item { 
-      justify-content: center; 
-      padding: 0.6rem;
-    }
-    
-    .sidebar-collapsed .sidebar-item i { 
-      margin: 0; 
-    }
-    
-    .sidebar-collapsed .sidebar-item:hover .tooltip { 
-      opacity: 1; 
-      transform: translateY(-50%) translateX(0); 
+    .tab-content.active {
+      display: block;
     }
 
-    .sidebar-item {
+    /* Dropdown styles */
+    .dropdown-container {
       position: relative;
-      display: flex;
-      align-items: center;
-      color: #9ca3af;
-      padding: 0.6rem 0.8rem;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      margin-bottom: 0.25rem;
-    }
-    
-    .sidebar-item.active {
-      color: #fbbf24;
-      background: rgba(251, 191, 36, 0.12);
-    }
-    
-    .sidebar-item.active::before {
-      content: "";
-      position: absolute;
-      left: 0;
-      top: 20%;
-      height: 60%;
-      width: 3px;
-      background: #fbbf24;
-      border-radius: 4px;
-    }
-    
-    .sidebar-item:hover { 
-      background: rgba(255,255,255,0.05); 
-      color: #fbbf24; 
-    }
-    
-    .sidebar-item i { 
-      width: 18px; 
-      height: 18px; 
-      stroke-width: 1.75; 
-      flex-shrink: 0; 
-      margin-right: 0.75rem; 
+      display: inline-block;
     }
 
-    .card {
-      background: rgba(26, 26, 26, 0.7);
-      border-radius: 12px;
-      padding: 1rem;
+    .dropdown-menu {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 0.5rem;
+      background: #1a1a1a;
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      border-radius: 8px;
+      padding: 0.5rem;
+      min-width: 320px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7);
+      z-index: 1000;
+      display: none;
       backdrop-filter: blur(10px);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-      transition: all 0.2s ease;
+      color: #e2e8f0;
     }
-    
-    .card:hover {
-      box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
-      transform: translateY(-2px);
+
+    .dropdown-menu.show {
+      display: block;
     }
-    
-    .card-title {
-      font-size: 0.9rem;
-      font-weight: 600;
-      color: #fbbf24;
-      margin-bottom: 0.5rem;
+
+    .dropdown-item {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      padding: 0.75rem;
+      color: #e2e8f0;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      background: transparent;
+      border: none;
+      width: 100%;
+      text-align: left;
+      font-size: 0.875rem;
     }
-    
-    .card-value {
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: #f8fafc;
+
+    .dropdown-item:hover {
+      background: rgba(251, 191, 36, 0.2);
+      color: #fbbf24;
     }
-    
-    .topbar {
-      background: rgba(13, 13, 13, 0.95);
+
+    .dropdown-item i {
+      width: 16px;
+      height: 16px;
+      stroke-width: 1.75;
+    }
+
+    .dropdown-divider {
+      height: 1px;
+      background: rgba(251, 191, 36, 0.2);
+      margin: 0.5rem 0;
+    }
+
+    .dropdown-header {
+      padding: 0.75rem;
+      border-bottom: 1px solid rgba(251, 191, 36, 0.2);
+      background: rgba(251, 191, 36, 0.1);
+    }
+
+    .dropdown-header h3 {
+      font-weight: 600;
+      color: #fbbf24;
+      margin: 0;
+      font-size: 0.9rem;
+    }
+
+    .dropdown-header p {
+      color: #d1d5db;
+      margin: 0.25rem 0 0 0;
+      font-size: 0.8rem;
+    }
+
+    /* Notification styles */
+    .notification-item {
+      padding: 0.75rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .notification-item:last-child {
+      border-bottom: none;
+    }
+
+    .notification-item:hover {
+      background: rgba(251, 191, 36, 0.1);
+    }
+
+    .notification-item.unread {
+      background: rgba(59, 130, 246, 0.1);
+      border-left: 3px solid #3b82f6;
+    }
+
+    .notification-title {
+      font-weight: 600;
+      color: #fbbf24;
+      margin-bottom: 0.25rem;
+      font-size: 0.875rem;
+    }
+
+    .notification-message {
+      color: #d1d5db;
+      font-size: 0.8rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .notification-time {
+      color: #6b7280;
+      font-size: 0.75rem;
+    }
+
+    .notification-badge {
+      position: absolute;
+      top: -2px;
+      right: -2px;
+      background: #ef4444;
+      color: white;
+      border-radius: 50%;
+      width: 18px;
+      height: 18px;
+      font-size: 0.7rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Export dropdown styles */
+    .export-container {
+      position: relative;
+      display: inline-block;
+    }
+
+    .export-dropdown {
+      position: fixed;
+      background: #1a1a1a;
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      border-radius: 8px;
+      padding: 0.5rem;
+      min-width: 220px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.7), 0 10px 10px -5px rgba(0, 0, 0, 0.3);
+      z-index: 10000;
+      display: none;
+      max-height: 80vh;
+      overflow-y: auto;
       backdrop-filter: blur(10px);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      color: #e2e8f0;
+    }
+
+    .export-dropdown.show {
+      display: block;
+    }
+
+    .export-option {
+      display: block;
+      padding: 0.75rem;
+      color: #e2e8f0;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      text-decoration: none;
+      background: transparent;
+      border: none;
+      width: 100%;
+      text-align: left;
+      font-size: 0.875rem;
+    }
+
+    .export-option:hover {
+      background: rgba(251, 191, 36, 0.2);
+      color: #fbbf24;
+    }
+
+    /* Select dropdown styles */
+    select.form-input {
+      background: #1a1a1a;
+      color: #e2e8f0;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23fbbf24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.75rem center;
+      background-size: 16px;
+      padding-right: 2.5rem;
+    }
+
+    select.form-input option {
+      background: #1a1a1a;
+      color: #e2e8f0;
+      padding: 0.5rem;
+    }
+
+    select.form-input:focus {
+      border-color: #fbbf24;
+      box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+    }
+
+    /* Textarea styles */
+    textarea.form-input {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      padding: 0.75rem;
+      color: white;
+      width: 100%;
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    textarea.form-input:focus {
+      outline: none;
+      border-color: #fbbf24;
+      box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.2);
+    }
+
+    /* Profit/Loss specific styles */
+    .profit-positive {
+      color: #22c55e;
+    }
+    
+    .profit-negative {
+      color: #ef4444;
+    }
+    
+    .profit-neutral {
+      color: #6b7280;
+    }
+
+    /* Table styles */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    th {
+      background: rgba(255, 255, 255, 0.05);
+      font-weight: 600;
+      color: #9ca3af;
+    }
+    
+    tr:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Chart fallback styles */
+    .chart-fallback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #6b7280;
+      text-align: center;
+    }
+    
+    .chart-fallback i {
+      margin-bottom: 1rem;
+      opacity: 0.5;
+    }
+
+    /* Loading spinner */
+    .loading-spinner {
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #fbbf24;
+      border-radius: 50%;
+      width: 20px;
+      height: 20px;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+      margin-right: 8px;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    /* Main content adjustment */
+    main {
+      margin-left: 240px; /* Match sidebar width */
+      transition: margin-left 0.3s ease;
+    }
+    
+    .sidebar-collapsed + main {
+      margin-left: 64px; /* Match collapsed sidebar width */
     }
     
     .button-sm { 
@@ -1620,168 +1300,17 @@ textarea.form-input:focus {
 </head>
 <body class="min-h-screen">
 
-  <!-- Topbar -->
-  <header class="topbar flex items-center justify-between px-4 py-3 shadow">
-    <div class="flex items-center space-x-3">
-      <button id="toggleSidebar" class="text-gray-300 hover:text-yellow-400 transition-colors p-1 rounded-lg hover:bg-white/5">
-        <i data-lucide="menu" class="w-5 h-5"></i>
-      </button>
-      <h1 class="text-lg font-bold text-yellow-400">BOIYETS FITNESS GYM</h1>
-    </div>
-    <div class="flex items-center space-x-3">
-      <!-- Chat Button -->
-      <a href="chat.php" class="text-gray-300 hover:text-blue-400 transition-colors p-2 rounded-lg hover:bg-white/5 relative">
-        <i data-lucide="message-circle"></i>
-        <?php if ($unread_count > 0): ?>
-          <span class="absolute -top-1 -right-1 bg-red-500 text-xs rounded-full h-5 w-5 flex items-center justify-center" id="chatBadge">
-            <?php echo $unread_count; ?>
-          </span>
-        <?php endif; ?>
-      </a>
-
-      <!-- Notification Bell -->
-      <div class="dropdown-container">
-        <button id="notificationBell" class="text-gray-300 hover:text-yellow-400 transition-colors p-2 rounded-lg hover:bg-white/5 relative">
-          <i data-lucide="bell" class="w-5 h-5"></i>
-          <?php if ($unread_notifications > 0): ?>
-            <span class="notification-badge" id="notificationBadge">
-              <?php echo $unread_notifications; ?>
-            </span>
-          <?php endif; ?>
-        </button>
-        <div id="notificationDropdown" class="dropdown-menu">
-          <div class="dropdown-header">
-            <h3>Notifications</h3>
-            <p>You have <span id="notificationCount"><?php echo $unread_notifications; ?></span> unread notifications</p>
-          </div>
-          <div class="max-h-96 overflow-y-auto" id="notificationList">
-            <div class="p-3 text-center text-gray-500 text-sm">
-              <div class="loading-spinner"></div> Loading notifications...
-            </div>
-          </div>
-          <div class="dropdown-divider"></div>
-          <a href="notifications.php" class="dropdown-item">
-            <i data-lucide="bell"></i>
-            <span>View All Notifications</span>
-          </a>
-        </div>
-      </div>
-
-      <div class="h-8 w-px bg-gray-700 mx-1"></div>
-      
-      <!-- User Profile Dropdown -->
-      <div class="dropdown-container">
-        <button id="userMenuButton" class="flex items-center space-x-2 text-gray-300 hover:text-yellow-400 transition-colors p-2 rounded-lg hover:bg-white/5">
-          <img src="<?php echo htmlspecialchars($_SESSION['profile_picture'] ?? 'https://i.pravatar.cc/40'); ?>" class="w-8 h-8 rounded-full border border-gray-600" id="userAvatar" />
-          <span class="text-sm font-medium hidden md:inline" id="userName">
-            <?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['username']); ?>
-          </span>
-          <i data-lucide="chevron-down" class="w-4 h-4"></i>
-        </button>
-        <div id="userDropdown" class="dropdown-menu">
-          <div class="dropdown-header">
-            <h3><?php echo htmlspecialchars($_SESSION['full_name'] ?? $_SESSION['username']); ?></h3>
-            <p><?php echo htmlspecialchars($_SESSION['role'] ?? 'Admin'); ?></p>
-          </div>
-          <a href="profile.php" class="dropdown-item">
-            <i data-lucide="user"></i>
-            <span>Profile</span>
-          </a>
-          <a href="settings.php" class="dropdown-item">
-            <i data-lucide="settings"></i>
-            <span>Settings</span>
-          </a>
-          <div class="dropdown-divider"></div>
-          <a href="logout.php" class="dropdown-item">
-            <i data-lucide="log-out"></i>
-            <span>Logout</span>
-          </a>
-        </div>
-      </div>
-    </div>
-  </header>
+<?php
+// Include Header and dynamically include Sidebar based on role
+require_once 'includes/admin_header.php';
+if ($_SESSION['role'] === 'admin') {
+    require_once 'includes/admin_sidebar.php';
+} else {
+    require_once 'includes/trainer_sidebar.php';
+}
+?>
 
   <div class="flex">
-    <!-- Sidebar -->
-    <aside id="sidebar" class="sidebar w-60 bg-[#0d0d0d] h-screen p-3 space-y-2 flex flex-col overflow-y-auto border-r border-gray-800">
-      <nav class="space-y-1 flex-1">
-        <a href="admin_dashboard.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="home"></i>
-            <span class="text-sm font-medium">Dashboard</span>
-          </div>
-          <span class="tooltip">Dashboard</span>
-        </a>
-
-        <a href="view_users.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="users"></i>
-            <span class="text-sm font-medium">View All Users</span>
-          </div>
-          <span class="tooltip">View All Users</span>
-        </a>
-
-        <a href="revenue.php" class="sidebar-item active">
-          <div class="flex items-center">
-            <i data-lucide="dollar-sign"></i>
-            <span class="text-sm font-medium">Revenue Tracking</span>
-          </div>
-          <span class="tooltip">Revenue Tracking</span>
-        </a>
-
-        <a href="products.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="package"></i>
-            <span class="text-sm font-medium">Products & Inventory</span>
-          </div>
-          <span class="tooltip">Products & Inventory</span>
-        </a>
-
-        <a href="adminannouncement.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="megaphone"></i>
-            <span class="text-sm font-medium">Announcements</span>
-          </div>
-          <span class="tooltip">Announcements</span>
-        </a>
-<a href="equipment_monitoring.php" class="sidebar-item">
-  <div class="flex items-center">
-    <i data-lucide="wrench"></i>
-    <span class="text-sm font-medium">Equipment Monitoring</span>
-  </div>
-  <span class="tooltip">Equipment Monitoring</span>
-</a>
-
-
-
-<a href="maintenance_report.php" class="sidebar-item">
-  <div class="flex items-center">
-    <i data-lucide="alert-triangle"></i>
-    <span class="text-sm font-medium">Maintenance Report</span>
-  </div>
-  <span class="tooltip">Maintenance Report</span>
-</a>
-
-        <a href="feedbacksadmin.php" class="sidebar-item">
-          <div class="flex items-center">
-            <i data-lucide="message-square"></i>
-            <span class="text-sm font-medium">Feedback & Reports</span>
-          </div>
-          <span class="tooltip">Feedback & Reports</span>
-        </a>
-
-        <div class="pt-4 border-t border-gray-800 mt-auto">
-          <a href="logout.php" class="sidebar-item">
-            <div class="flex items-center">
-              <i data-lucide="log-out"></i>
-              <span class="text-sm font-medium">Logout</span>
-            </div>
-            <span class="tooltip">Logout</span>
-          </a>
-        </div>
-      </nav>
-    </aside>
-
     <!-- Main Content -->
     <main class="flex-1 p-4 space-y-4 overflow-auto">
       <div class="flex justify-between items-center mb-6">
@@ -3493,15 +3022,12 @@ textarea.form-input:focus {
     // Auto-refresh notifications every 30 seconds
     setInterval(loadNotifications, 30000);
   </script>
-</body>
-</html>
-
 <?php 
+// Include footer and scripts
+require_once 'includes/admin_footer.php'; 
+
 // Close database connection only - statements are already closed
 if (isset($conn) && $conn instanceof mysqli) {
     $conn->close();
 }
 ?>
-
-
-

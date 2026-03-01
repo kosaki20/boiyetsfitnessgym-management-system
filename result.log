@@ -1,0 +1,15 @@
+PHP Warning:  Module "openssl" is already loaded in Unknown on line 0
+
+Warning: Module "openssl" is already loaded in Unknown on line 0
+Could not find boundaries for trainerworkout.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for trainermealplan.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for trainermanageqrcodes.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for trainer_equipment_monitoring.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for trainer_maintenance_report.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for feedbackstrainer.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for attendance_logs.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for member_registration.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for membership_status.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for all_members.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for clientprogress.php: html=-1, sidebar=-1, body=-1
+Could not find boundaries for countersales.php: html=-1, sidebar=-1, body=-1

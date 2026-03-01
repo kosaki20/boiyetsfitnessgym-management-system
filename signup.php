@@ -1,23 +1,14 @@
 <?php
-// DEBUG MODE - Remove this in production
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-
 // Start session if not already started
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
 // Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
-
-$conn = new mysqli($servername, $username, $password, $dbname);
+require_once 'includes/db_connection.php';
 
 $errors = [];
+
 
 // Handle form submission
 if ($_SERVER["REQUEST_METHOD"] == "POST") {

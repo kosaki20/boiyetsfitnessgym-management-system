@@ -6,19 +6,8 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'trainer') {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
 
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-if ($conn->connect_error) {
-    header('Content-Type: application/json');
-    echo json_encode(['success' => false, 'message' => 'Database connection failed']);
-    exit();
-}
+require_once 'includes/db_connection.php';
 
 header('Content-Type: application/json');
 

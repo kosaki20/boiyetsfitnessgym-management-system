@@ -2,18 +2,7 @@
 session_start();
 require_once 'chat_functions.php';
 
-// Database connection
-$servername = "localhost";
-$username = "root";  // full Hostinger DB username
-$password = "";           // your Hostinger DB password
-$dbname = "boiyetsdb";         // full Hostinger DB name
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-// Check connection
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
+require_once 'includes/db_connection.php';
 $user_id = $_GET['user_id'] ?? 0;
 $last_id = $_GET['last_id'] ?? 0;
 

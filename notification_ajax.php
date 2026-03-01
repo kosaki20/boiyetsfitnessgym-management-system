@@ -6,18 +6,7 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";  // full Hostinger DB username
-$password = "";           // your Hostinger DB password
-$dbname = "boiyetsdb";         // full Hostinger DB name
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-// Check connection
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
+require_once 'includes/db_connection.php';
 
 require_once 'notification_functions.php';
 

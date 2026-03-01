@@ -5,24 +5,17 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] != 'trainer') {
     exit();
 }
 
-// Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
+require_once 'includes/db_connection.php';
+require_once 'chat_functions.php';
+require_once 'notification_functions.php';
 
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-if ($conn->connect_error) {
-    die("Connection failed: " . $conn->connect_error);
-}
-
+$unread_count = getUnreadCount($_SESSION['user_id'], $conn);
 $trainer_id = $_SESSION['user_id'];
 
 
 
 // Get renewal requests for this trainer
-$requests_sql = "SELECT mr.*, m.contact_number, m.email, m.current_status,
+$requests_sql = "SELECT mr.*, m.contact_number, m.email, m.current_status, m.name as member_name,
                  (SELECT status FROM members WHERE id = mr.member_id) as member_status
                  FROM membership_renewal_requests mr
                  LEFT JOIN members m ON mr.member_id = m.id
@@ -43,79 +36,18 @@ $membership_plans = [
     'monthly' => ['name' => 'Monthly', 'price' => 400]
 ];
 ?>
+<?php require_once 'includes/trainer_header.php'; ?>
+<?php require_once 'includes/trainer_sidebar.php'; ?>
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Renewal Requests - BOIYETS FITNESS GYM</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-        
-        * {
-            font-family: 'Inter', sans-serif;
-        }
-        
-        body {
-            background: linear-gradient(135deg, #111 0%, #0a0a0a 100%);
-            color: #e2e8f0;
-            min-height: 100vh;
-        }
-        
-        .card {
-            background: rgba(26, 26, 26, 0.7);
-            border-radius: 12px;
-            padding: 1.5rem;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-        }
-        
-        .status-badge {
-            padding: 0.25rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: 500;
-        }
-        
-        .status-pending { background: rgba(245, 158, 11, 0.2); color: #f59e0b; }
-        .status-paid { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
-        .status-completed { background: rgba(16, 185, 129, 0.2); color: #10b981; }
-        .status-rejected { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        
-        .btn {
-            padding: 0.5rem 1rem;
-            border-radius: 8px;
-            font-weight: 500;
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            transition: all 0.2s ease;
-            border: none;
-            cursor: pointer;
-        }
-        
-        .btn-success { background: rgba(16, 185, 129, 0.2); color: #10b981; }
-        .btn-success:hover { background: rgba(16, 185, 129, 0.3); }
-        
-        .btn-danger { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
-        .btn-danger:hover { background: rgba(239, 68, 68, 0.3); }
-        
-        .btn-primary { background: rgba(59, 130, 246, 0.2); color: #3b82f6; }
-        .btn-primary:hover { background: rgba(59, 130, 246, 0.3); }
-    </style>
-</head>
-<body class="min-h-screen">
-    <div class="container mx-auto p-6">
+    <!-- Main Content -->
+    <main class="flex-1 p-4 space-y-4 overflow-auto">
         <!-- Header -->
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-3xl font-bold text-yellow-400 flex items-center gap-3">
                 <i data-lucide="refresh-cw"></i>
                 Membership Renewal Requests
             </h1>
-            <a href="membership_status.php" class="btn btn-primary">
+            <a href="membership_status.php" class="button-sm btn-primary">
                 <i data-lucide="arrow-left"></i>
                 Back to Members
             </a>
@@ -197,13 +129,13 @@ $membership_plans = [
         <?php if ($request['status'] === 'pending'): ?>
             <!-- Single Process Button for BOTH GCash and Cash -->
             <button onclick="processRenewal(<?php echo $request['member_id']; ?>, '<?php echo $request['plan_type']; ?>', '<?php echo $request['payment_method']; ?>')" 
-                    class="btn btn-success">
+                    class="button-sm btn-active">
                 <i data-lucide="refresh-cw"></i> Process Renewal
             </button>
             
             <?php if ($request['payment_method'] === 'gcash' && $request['gcash_screenshot']): ?>
                 <button onclick="viewScreenshot('<?php echo $request['gcash_screenshot']; ?>')" 
-                        class="btn btn-primary">
+                        class="button-sm btn-primary">
                     <i data-lucide="image"></i> View Proof
                 </button>
             <?php endif; ?>
@@ -222,7 +154,7 @@ $membership_plans = [
                 </div>
             <?php endif; ?>
         </div>
-    </div>
+    </main>
 
 
 
@@ -239,9 +171,8 @@ $membership_plans = [
         </div>
     </div>
 
-    <script>
-        lucide.createIcons();
-
+<?php require_once 'includes/trainer_footer.php'; ?>
+<script>
 
         // Screenshot Modal Functions
         function viewScreenshot(imagePath) {
@@ -306,9 +237,3 @@ $membership_plans = [
             }
         });
     </script>
-</body>
-</html>
-<?php $conn->close(); ?>
-
-
-

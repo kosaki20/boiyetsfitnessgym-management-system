@@ -1,17 +1,7 @@
 <?php
 session_start();
 
-// Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "boiyetsdb";
-
-$conn = new mysqli($servername, $username, $password, $dbname);
-
-if ($conn->connect_error) {
-    die(json_encode(['success' => false, 'message' => 'Database connection failed: ' . $conn->connect_error]));
-}
+require_once 'includes/db_connection.php';
 
 header('Content-Type: application/json');
 
@@ -64,36 +54,34 @@ try {
         
     } elseif ($action == 'get_maintenance_stats') {
         // Get maintenance statistics for dashboard
-        $stats_sql = "SELECT 
-                        COUNT(*) as total_issues,
-                        SUM(CASE WHEN status = 'Needs Maintenance' THEN 1 ELSE 0 END) as needs_maintenance,
-                        SUM(CASE WHEN status = 'Under Repair' THEN 1 ELSE 0 END) as under_repair,
-                        SUM(CASE WHEN status = 'Broken' THEN 1 ELSE 0 END) as broken
-                      FROM equipment 
-                      WHERE status IN ('Needs Maintenance', 'Under Repair', 'Broken')";
-        
-        $stats_result = $conn->query($stats_sql);
-        if (!$stats_result) {
-            echo json_encode(['success' => false, 'message' => 'Stats query failed: ' . $conn->error]);
-            exit();
-        }
-        $stats = $stats_result->fetch_assoc();
-        
+        $stats_stmt = $conn->prepare(
+            "SELECT
+                COUNT(*) as total_issues,
+                SUM(CASE WHEN status = 'Needs Maintenance' THEN 1 ELSE 0 END) as needs_maintenance,
+                SUM(CASE WHEN status = 'Under Repair' THEN 1 ELSE 0 END) as under_repair,
+                SUM(CASE WHEN status = 'Broken' THEN 1 ELSE 0 END) as broken
+            FROM equipment
+            WHERE status IN ('Needs Maintenance', 'Under Repair', 'Broken')"
+        );
+        $stats_stmt->execute();
+        $stats = $stats_stmt->get_result()->fetch_assoc();
+
         // Get recent maintenance items
-        $recent_sql = "SELECT name, status, last_updated 
-                       FROM equipment 
-                       WHERE status IN ('Needs Maintenance', 'Under Repair', 'Broken') 
-                       ORDER BY last_updated DESC 
-                       LIMIT 5";
-        $recent_result = $conn->query($recent_sql);
+        $recent_stmt = $conn->prepare(
+            "SELECT name, status, last_updated FROM equipment
+             WHERE status IN ('Needs Maintenance', 'Under Repair', 'Broken')
+             ORDER BY last_updated DESC LIMIT 5"
+        );
+        $recent_stmt->execute();
+        $recent_result = $recent_stmt->get_result();
         $recent_items = [];
-        while($item = $recent_result->fetch_assoc()) {
+        while ($item = $recent_result->fetch_assoc()) {
             $recent_items[] = $item;
         }
-        
+
         echo json_encode([
-            'success' => true, 
-            'stats' => $stats,
+            'success'      => true,
+            'stats'        => $stats,
             'recent_items' => $recent_items
         ]);
         
